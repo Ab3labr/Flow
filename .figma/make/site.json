@@ -1,0 +1,10 @@
+{
+  "description": "A floating Windows desktop hub for music, calendars, timers, and screen capture, giving users quick access to everyday tools without leaving their work.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
