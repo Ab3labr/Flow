@@ -23,4 +23,13 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.12.6", features = [] }
 tauri-plugin-log = "2"
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Security"] }
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_System_Threading",
+  "Win32_Security",
+  # Phase 2 hot zone: cursor poll, monitor/DPI lookup, mouse buttons.
+  "Win32_Graphics_Gdi",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }

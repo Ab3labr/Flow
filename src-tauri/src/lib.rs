@@ -1,5 +1,7 @@
 use tauri::Manager;
 
+mod triggers;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
@@ -35,6 +37,7 @@ pub fn run() {
         let handle = app.handle().clone();
         tauri::async_runtime::spawn(async move {
           settings::ensure_settings_file(&handle).await;
+          triggers::start(handle);
         });
       }
 

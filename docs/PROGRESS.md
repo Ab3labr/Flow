@@ -26,7 +26,7 @@ not started / in progress / done / blocked
 - [x] `cargo check` + `pnpm tauri build` smoke test
 
 ### Phase 2 — Triggers
-- [ ] Rust cursor poll ~60 Hz, 240x4 px zone, 180 ms dwell, mouse-button +
+- [x] Rust cursor poll ~60 Hz, 240x4 px zone, 180 ms dwell, mouse-button +
       fullscreen suppression
 - [ ] WH_KEYBOARD_LL hook thread: double-Alt 350 ms, custom shortcut parse,
       Alt menu suppression (F24 inject — verify)
@@ -123,6 +123,20 @@ Tauri 2 shell scaffolded:
 - Build succeeds (debug bundle produces MSI and NSIS installers)
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
 
+## Last session (Phase 2 hot zone)
+Done: cursor poll thread (~60 Hz), 240x4 logical-px zone centered on the
+cursor's monitor and scaled by that monitor's DPI, 180 ms dwell, mouse-button
+and fullscreen suppression, emits `open-request`. Pure geometry/dwell/
+suppression logic has 7 `cargo test` cases.
+Half-done / follow-ups:
+- Settings (`topEdge`, `hideInFullscreen`) are read once when the thread
+  starts; changing them needs an app restart until settings-changed wiring.
+- Fullscreen detection is a window-rect vs monitor-rect heuristic; verify
+  borderless/maximized games on a real PC (Phase 8 item).
+- `open-request` has no consumer yet (Phase 2 item 4) and no panel-state
+  check, so it can fire while the panel is already open.
+
 ## Log
 - Phase 0: docs written, git init, commit. Owner decisions resolved. Tauri deps installed.
 - Phase 1: Tauri shell scaffolded, single-instance mutex, settings persistence, builds successfully.
+- Phase 2: hot-zone cursor poll, dwell, suppression implemented with unit tests.
