@@ -167,10 +167,11 @@ Content `mt-1.5`, `AnimatePresence mode="wait"` per tab: enter opacity
   bg-[#121212]`, rows `h-8 px-2.5 border-b white/6`:
   "Open at top edge" (`topEdge`), "Open with Alt Alt" (`altAlt` + shortcut
   input `w-[58px]` readOnly capturing keydown), "Hide in fullscreen apps"
-  (`fullscreen`), "Launch at startup" (`launch`), "Demo: upcoming event"
+  (`hideInFullscreen`), "Launch at startup" (`launchAtStartup`), "Demo: upcoming event"
   (`upcomingEvent`), "Demo: no calendars connected" (`noCalendars`).
-- Toggle: `h-5 w-9`, white on / `#303030` off, knob x 3↔19 spring 500/32,
-  `whileTap 0.94`.
+- Toggle: `h-5 w-9` (36x20, knob 14), one `value` drives track + knob +
+  `aria-checked`; on = white track + black knob at x 19, off = `#303030` track
+  + `#9a9a9a` knob at x 3; spring 500/32, `whileTap 0.94`.
 - "CALENDARS" + "＋ Add" → connect sheet; account rows; "Notes folder"
   `h-9 rounded-xl bg-[#121212] px-2.5` label + path ("Documents\Notch
   Notes" mock text — spec folder is `Documents\Float Notes`) + "Open folder"

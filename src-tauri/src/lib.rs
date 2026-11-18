@@ -102,15 +102,33 @@ mod settings {
   use std::fs;
   use tauri::Manager;
 
+  fn default_true() -> bool {
+    true
+  }
+
+  fn default_shortcut() -> String {
+    "Alt Alt".to_string()
+  }
+
+  /// Shared with the frontend: the same camelCase names, and every
+  /// `#[serde(default)]` below keeps a partial settings.json usable. Old keys
+  /// from earlier versions ("fullscreen", "launch") are simply ignored.
   #[derive(Debug, Serialize, Deserialize, Default)]
   #[serde(rename_all = "camelCase")]
   pub struct NotchSettings {
+    #[serde(default = "default_true")]
     pub top_edge: bool,
+    #[serde(default = "default_true")]
     pub alt_alt: bool,
+    #[serde(default = "default_true")]
     pub hide_in_fullscreen: bool,
+    #[serde(default = "default_true")]
     pub launch_at_startup: bool,
+    #[serde(default = "default_true")]
     pub upcoming_event: bool,
+    #[serde(default)]
     pub no_calendars: bool,
+    #[serde(default = "default_shortcut")]
     pub shortcut: String,
   }
 
@@ -140,7 +158,7 @@ mod settings {
       "topEdge": true,
       "altAlt": true,
       "hideInFullscreen": true,
-      "launchAtStartup": false,
+      "launchAtStartup": true,
       "upcomingEvent": true,
       "noCalendars": false,
       "shortcut": "Alt Alt"
@@ -177,6 +195,55 @@ mod settings {
     fs::write(&temp_path, content).map_err(|e| e.to_string())?;
     fs::rename(&temp_path, &settings_path).map_err(|e| e.to_string())?;
     Ok(())
+  }
+
+  #[cfg(test)]
+  mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_notch_settings_use_defaults() {
+      let notch: NotchSettings = serde_json::from_str("{}").unwrap();
+      assert!(notch.top_edge);
+      assert!(notch.alt_alt);
+      assert!(notch.hide_in_fullscreen);
+      assert!(notch.launch_at_startup);
+      assert!(notch.upcoming_event);
+      assert!(!notch.no_calendars);
+      assert_eq!(notch.shortcut, "Alt Alt");
+    }
+
+    #[test]
+    fn missing_toggles_default_to_true() {
+      let notch: NotchSettings =
+        serde_json::from_str(r#"{ "shortcut": "Ctrl + Shift + Space" }"#).unwrap();
+      assert!(notch.top_edge);
+      assert!(notch.alt_alt);
+      assert!(notch.hide_in_fullscreen);
+      assert!(notch.launch_at_startup);
+      assert_eq!(notch.shortcut, "Ctrl + Shift + Space");
+    }
+
+    #[test]
+    fn legacy_keys_are_ignored() {
+      let notch: NotchSettings =
+        serde_json::from_str(r#"{ "fullscreen": false, "launch": false }"#).unwrap();
+      assert!(notch.hide_in_fullscreen);
+      assert!(notch.launch_at_startup);
+    }
+
+    #[test]
+    fn defaults_json_matches_frontend_defaults() {
+      let notch: NotchSettings =
+        serde_json::from_str::<AppSettings>(DEFAULT_SETTINGS).unwrap().notch;
+      assert!(notch.top_edge);
+      assert!(notch.alt_alt);
+      assert!(notch.hide_in_fullscreen);
+      assert!(notch.launch_at_startup);
+      assert!(notch.upcoming_event);
+      assert!(!notch.no_calendars);
+      assert_eq!(notch.shortcut, "Alt Alt");
+    }
   }
 }
 

@@ -53,7 +53,7 @@ export const DEFAULT_NOTCH_SETTINGS: NotchSettings = {
   topEdge: true,
   altAlt: true,
   hideInFullscreen: true,
-  launchAtStartup: false,
+  launchAtStartup: true,
   upcomingEvent: true,
   noCalendars: false,
   shortcut: "Alt Alt",

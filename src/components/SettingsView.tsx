@@ -7,18 +7,18 @@ import { CalendarAccountRow, CalendarConnectSheet } from "./CalendarConnect";
 
 export type { NotchSettings };
 
-function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void }) {
+function Toggle({ value, onChange }: { value: boolean; onChange: () => void }) {
   return (
     <motion.button
       whileTap={{ scale: 0.94 }}
       onClick={onChange}
       role="switch"
-      aria-checked={checked}
-      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${checked ? "bg-white" : "bg-[#303030]"}`}
+      aria-checked={value}
+      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${value ? "bg-white" : "bg-[#303030]"}`}
     >
       <motion.span
-        className={`absolute top-[3px] h-3.5 w-3.5 rounded-full ${checked ? "bg-black" : "bg-white/65"}`}
-        animate={{ x: checked ? 19 : 3 }}
+        className={`absolute top-[3px] h-3.5 w-3.5 rounded-full ${value ? "bg-black" : "bg-[#9a9a9a]"}`}
+        animate={{ x: value ? 19 : 3 }}
         transition={{ type: "spring", stiffness: 500, damping: 32 }}
       />
     </motion.button>
@@ -93,7 +93,7 @@ export function SettingsView({
                   />
                 )}
                 <Toggle
-                  checked={settings[key] as boolean}
+                  value={settings[key] as boolean}
                   onChange={() => onChange({ ...settings, [key]: !settings[key] })}
                 />
               </div>

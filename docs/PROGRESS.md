@@ -128,6 +128,24 @@ Tauri 2 shell scaffolded:
 - Commands: settings_get, settings_set
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
 
+## Last session (settings toggles & defaults)
+Done: one shared `Toggle` in `SettingsView` drives the track, the knob and
+`aria-checked` from the same `value` boolean. ON = white track + black knob at
+x 19; OFF = `#303030` track + `#9a9a9a` knob at x 3. Size (36x20, knob 14),
+positions and the 500/32 spring are unchanged.
+Defaults are `topEdge`, `altAlt`, `hideInFullscreen` and `launchAtStartup` all
+true in both TypeScript (`DEFAULT_NOTCH_SETTINGS`) and Rust (`DEFAULT_SETTINGS`
+plus a per-field `#[serde(default = "…")]` for every notch field, so a
+settings.json missing a field loads with the default instead of failing).
+Legacy keys `"fullscreen"`/`"launch"` are ignored (serde behaviour, covered by
+a unit test). Frontend and Rust use the same names (`topEdge`, `altAlt`,
+`hideInFullscreen`, `launchAtStartup`, `shortcut`); `settingsService` passes the
+notch object straight through in both directions.
+Half-done / follow-ups:
+- Existing settings.json files keep their saved values; the new defaults only
+  apply to missing fields and fresh installs.
+- "Launch at startup" still only persists — the autostart plugin is Phase 8.
+
 ## Last session (hot-zone rewrite)
 Done: the top-edge trigger is now physical-px only. `in_hot_zone(cx, cy, mon_x,
 mon_y, mon_w, scale)` computes the 240x4 design zone × the monitor's scale
@@ -260,3 +278,4 @@ Half-done / follow-ups:
 - Settings: unified `hideInFullscreen`/`launchAtStartup` names and defaults across Rust/TypeScript.
 - Triggers: Rust WH_KEYBOARD_LL double-Alt hook (`toggle-request`), JS sequence Tauri-gated, pure tracker unit-tested.
 - Triggers: physical-px `in_hot_zone` + new `DwellTracker`, closed-only `open-request {source:"hover"}`, unpinned hover open.
+- Settings: single-value `Toggle` (white/black on, #303030/#9a9a9a off), four toggles default true, serde defaults for partial settings.json.
