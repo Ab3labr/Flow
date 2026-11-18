@@ -106,6 +106,8 @@ State-driven geometry + input (Rust owns, frontend reports):
 - **pill active:** shrink window to ~200x90 centered, ignore=false.
 - **open:** max size 560x400, ignore=false.
 
+Window height follows panel height + 40 px bleed (grow before expand, shrink after close). Never leave a large transparent window capturing clicks.
+
 Frontend computes desired mode → emits `ui-mode` event payload
 `{mode: "idle"|"pill"|"open"}`; Rust applies size/position/ignore. Rust
 also shows window + emits `panel-state` for pill sources it owns (timer
@@ -132,8 +134,8 @@ window blur (`Focused` event) → emit `close-request` → frontend `close()`.
   foreground. All math in physical px using `scale_factor`.
 - Keyboard hook thread: `WH_KEYBOARD_LL` + message loop. Pure
   `AltTapTracker` (350 ms window, any other key resets) + `Shortcut`
-  parser for `settings.shortcut`. On Alt keydown inject F24 via
-  `SendInput` to suppress menu-bar activation (verify on PC). Emits
+  parser for `settings.shortcut`. On Alt keydown inject an unassigned virtual key (not F24) via
+  `SendInput` to suppress menu-bar activation (verify on PC with Alt+Tab, Alt+F4, Alt+Space). Emits
   `toggle-request`.
 - Unit tests: `cargo test` on pure trackers/parser.
 
@@ -164,8 +166,8 @@ window blur (`Focused` event) → emit `close-request` → frontend `close()`.
 position/size in logical px via Tauri APIs (it converts).
 
 ### Tray
-`TrayIconBuilder` menu: "Open Float" → `open-request`; "Settings" →
-`open-request {tab:"settings"}`; "Quit" → exit. Icon: generated PNG in
+`TrayIconBuilder` menu: "Open Float" → `open-request` (opens panel pinned and focused); "Settings" →
+`open-request {tab:"settings"}` (also pinned and focused); "Quit" → exit. Icon: generated PNG in
 `src-tauri/icons/`.
 
 ### Plugins (planned, each justified in docs/DECISIONS.md)

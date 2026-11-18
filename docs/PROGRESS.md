@@ -10,8 +10,9 @@ not started / in progress / done / blocked
 
 ### Phase 0 — Understand & document
 - [x] Read codebase, write FEATURES/LAYOUT/ARCHITECTURE/PROGRESS + gap analysis
-- [ ] `git init` + initial commit (prototype + docs)
-- [ ] Update AGENTS.md for real project
+- [x] `git init` + initial commit (prototype + docs)
+- [x] Update AGENTS.md for real project
+- [x] Owner decisions recorded in docs/DECISIONS.md (8 questions resolved)
 
 ### Phase 1 — Tauri shell
 - [ ] `src-tauri/` scaffold (Cargo.toml, tauri.conf.json, build.rs,
@@ -110,6 +111,8 @@ Prototype fully read: 14 source files, all fake data via
 `src/services/mockServices.ts`. Docs written: FEATURES, LAYOUT,
 ARCHITECTURE, GAP_ANALYSIS. Key decisions recorded in ARCHITECTURE
 (window geometry model, service-layer target, event names).
+Repo initialized; Phase 0 committed. Owner decisions resolved 8 open questions
+via docs/DECISIONS.md. Tauri 2 deps installed (@tauri-apps/api, @tauri-apps/cli).
 
 ## Log
-- Phase 0: docs written; awaiting git init + first commit.
+- Phase 0: docs written, git init, commit. Owner decisions resolved. Tauri deps installed.

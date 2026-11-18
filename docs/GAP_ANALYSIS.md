@@ -58,14 +58,14 @@ implementation needs.
 | Hardcoded "WED, 4 NOV" | Actual date formatted `ddd, D MMM` |
 | `detail` preformatted "in 5 min · 30 min" | Service returns raw fields; format in UI/service consistently |
 | `live` flag on one mock event | `startsAt <= now < endsAt` |
-| Meeting detect: Meet/Zoom/Teams only | Add Webex; extract first matching URL → `meetingUrl` |
+| Meeting detect: Meet/Zoom/Teams only | Add Webex (webex.com and subdomains); extract first matching URL → `meetingUrl` |
 | Join inert | `open` crate / opener plugin → default browser |
 | Reminder: JS effect finds event ≤5 min, 900 ms delay, 6 s pill | Rust scheduler (~30 s tick): event with link starting ≤5 min → toast + `meeting-reminder` event → pill w/ Join |
-| "Demo:" toggles | Remove or keep only in mock mode (decide Phase 6) |
+| "Demo:" toggles | REMOVED from real build; kept in mock mode only (per owner decision). |
 | Events don't refresh with time | Periodic refresh + on-open refresh + `calendar-changed` events |
 | `accountCount` stale in sheet | Pass live count or compute at connect time |
-| iCloud provider listed | Spec skips Apple — keep UI row but mark unsupported? Decide: spec lists providers in UI already; implement google/outlook/ics; iCloud row can show "not supported" or be removed — flag to user |
-| Local calendar | NEW: default offline store, add/edit/delete via "+" button (needs small event editor UI — check design; "+" currently opens connect sheet! Spec says "+" adds events — design tension, resolve in Phase 6) |
+| iCloud provider listed | HIDDEN (per owner decision). Users with iCloud calendars can add them via public ICS link. |
+| Local calendar | NEW: default offline store, add/edit/delete via "+" button. Per owner decision: "+" opens a minimal add-event sheet (title, start/end time, optional meeting link) in existing style. Connecting calendars stays in Settings and the empty state. |
 
 ## Capture
 | Prototype | Real |
@@ -73,7 +73,7 @@ implementation needs.
 | Snip button inert | Phase 7a: `ms-screenclip:` URI; later custom overlay → PNG to `Pictures\Float Screenshots` + clipboard + toast |
 | Record = local bool + 1 s counter | Windows Graphics Capture (`windows-capture` crate) → H.264 MP4 in `Videos\Float Recordings`; ffmpeg sidecar fallback; start on primary monitor |
 | Elapsed in Notch state | Rust owns recording; `recording-state` events → pill + Capture tab |
-| Stop from Capture tab only | Also stop from pill (pill click expands; add stop affordance? spec: "stop from the pill or the Capture tab" — pill needs a stop control; may require small UI addition — flag) |
+| Stop from Capture tab only | Also stop from pill (per owner decision: small stop button appears on pill hover; clicking the rest of the pill still expands the panel). |
 | Float window captured | `SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)` |
 | No audio | Stretch goal, skip |
 
@@ -84,7 +84,7 @@ implementation needs.
 | Shortcut input captures keydown string | Same UI; Rust hook parses "Ctrl + Alt + X" format |
 | "Launch at startup" toggle inert | Persist now; `tauri-plugin-autostart` Phase 8 |
 | "Hide in fullscreen apps" inert | Rust foreground-window fullscreen detection suppresses triggers |
-| "Notes folder" static text + inert button | Show configured path; Open folder → Explorer; folder picker? (spec: changeable in Settings — needs picker or text input; flag UX) |
+| "Notes folder" static text + inert button | Show configured path; Open folder → Explorer. Folder picker DEFERRED to Phase 8 (per owner decision). |
 | Calendar accounts section | Real accounts; connect/disconnect/visibility/reconnect wired |
 
 ## Cross-cutting
@@ -104,19 +104,13 @@ implementation needs.
 | `events` memo stale w.r.t. time | Refresh on interval/open/events |
 | `Notch` monolith | Keep structure; inject services via props/context minimally |
 
-## Open questions for user (flagged, not blocking)
-1. iCloud provider row: implement, hide, or mark unsupported? (Spec doesn't
-   cover it; phases list Google/Microsoft/ICS only.)
-2. "+" button in CalendarView currently opens the connect sheet; spec says
-   it adds events. Need a small add-event editor — confirm OK to extend UI.
-3. "Demo:" toggles in Settings — keep (mock parity) or remove in real build?
-4. Stop-recording control on the live pill — pill is 108x26 with just
-   elapsed text today; spec wants stop from pill. Minimal change: make
-   pill click stop? Or add tiny stop button? Confirm.
-5. Notes folder picker UX (native folder dialog via tauri dialog plugin —
-   adds dependency).
-6. Tray "Open Float" pinned or hover-style? (Assume unpinned.)
-7. Webex detection: `webex.com` domain match OK?
-8. Recurring calendar events (RRULE): expand or show instances only?
-   (Spec silent — assume basic RRULE expansion for daily/weekly or
-   document limitation.)
+## Open questions for user — RESOLVED
+All 8 questions resolved via owner decisions (see docs/DECISIONS.md):
+1. iCloud row: HIDDEN. Users add iCloud calendars via public ICS link.
+2. "+" button: EXTENDS UI to open a minimal add-event sheet (title, start/end time, optional meeting link). Connecting calendars stays in Settings/empty state.
+3. "Demo:" toggles: Removed from real build; kept in mock mode only.
+4. Recording pill stop: Small stop button appears on hover; clicking rest of pill expands panel.
+5. Notes folder picker: DEFERRED to Phase 8. Fixed default folder used now.
+6. Tray "Open Float": PINNED (opens panel pinned and focused).
+7. Webex detection: Yes, match `webex.com` and its subdomains.
+8. Recurring events: Google/Outlook expand server-side; ICS uses RRULE crate. Local events are non-recurring in v1 (documented limit).
