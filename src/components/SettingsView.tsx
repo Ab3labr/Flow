@@ -46,8 +46,8 @@ export function SettingsView({
   const rows: { key: keyof NotchSettings; label: string; demo?: boolean }[] = [
     { key: "topEdge", label: "Open at top edge" },
     { key: "altAlt", label: "Open with Alt Alt" },
-    { key: "fullscreen", label: "Hide in fullscreen apps" },
-    { key: "launch", label: "Launch at startup" },
+    { key: "hideInFullscreen", label: "Hide in fullscreen apps" },
+    { key: "launchAtStartup", label: "Launch at startup" },
     { key: "upcomingEvent", label: "Demo: upcoming event", demo: true },
     { key: "noCalendars", label: "Demo: no calendars connected", demo: true },
   ];

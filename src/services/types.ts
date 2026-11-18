@@ -42,8 +42,8 @@ export type Note = {
 export type NotchSettings = {
   topEdge: boolean;
   altAlt: boolean;
-  fullscreen: boolean;
-  launch: boolean;
+  hideInFullscreen: boolean;
+  launchAtStartup: boolean;
   upcomingEvent: boolean;
   noCalendars: boolean;
   shortcut: string;
@@ -52,8 +52,8 @@ export type NotchSettings = {
 export const DEFAULT_NOTCH_SETTINGS: NotchSettings = {
   topEdge: true,
   altAlt: true,
-  fullscreen: true,
-  launch: true,
+  hideInFullscreen: true,
+  launchAtStartup: false,
   upcomingEvent: true,
   noCalendars: false,
   shortcut: "Alt Alt",

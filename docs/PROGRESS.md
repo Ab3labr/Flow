@@ -124,6 +124,14 @@ Tauri 2 shell scaffolded:
 - Commands: settings_get, settings_set
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
 
+## Last session (settings naming)
+Done: TypeScript and Rust now share the same names and defaults —
+`hideInFullscreen` and `launchAtStartup` everywhere, defaults topEdge/altAlt/
+hideInFullscreen true and launchAtStartup false. The mapping layer is gone;
+`settingsService` passes the notch object straight to `settings_set`.
+Settings tab changes still save to `settings.json` and load on startup. Demo
+rows stay mock-only; lyrics and "Output device" stay hidden in the real app.
+
 ## Last session (font + service split)
 Done: Tauri renders only `Notch` on a fully transparent page (no wallpaper,
 taskbar or 1920x1080 stage scaling); a plain browser keeps the fake desktop.
@@ -194,3 +202,4 @@ Half-done / follow-ups:
 - Window model: `set_ui_mode` idle/pill/open, DPI-aware cursor-monitor placement, frontend open-request consumption.
 - Settings: real settingsService (settings_get/settings_set), persisted toggles, mock-only demo/lyrics/output controls.
 - Fonts/services: Inter bundled locally, Tauri-only notch render, services split into types/mock/tauri/index.
+- Settings: unified `hideInFullscreen`/`launchAtStartup` names and defaults across Rust/TypeScript.
