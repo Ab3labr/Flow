@@ -40,6 +40,8 @@ not started / in progress / done / blocked
 - [x] Frontend consumes `open-request`/`toggle-request` events
 - [x] Settings live via `RwLock` shared state (`settings_set` applies with no
       restart), suppression-reason logging ≤1/s, `settingsVersion` migration
+- [x] Rust-owned panel state: double-Alt open/close decision, Esc close,
+      outside-click close while pinned (`close-request`), tracker reset
 
 ### Phase 3 — Music (SMTC)
 - [ ] Now playing snapshot + events (session/props/playback/timeline)
@@ -129,6 +131,35 @@ Tauri 2 shell scaffolded:
 - Settings file creation/load/save implemented (atomic temp+rename), stores NotchSettings, notesFolder, calendarAccounts, timerCustomTimes
 - Commands: settings_get, settings_set
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
+
+## Last session (Rust-owned panel open state + three close paths)
+Done: `window_mode::AppState` (managed with `app.manage`) now holds
+`panel_open`, `panel_pinned` and the panel height + physical screen rect
+(480 logical wide, centered on the monitor, height = the reported
+`panel_height`, top at the monitor's y). `set_ui_mode` gained a `pinned` arg and
+updates all of it: `open` = true, `idle`/`pill` = false. When the open state
+flips, `triggers::reset_alt_tracker` clears the double-Alt tracker and logs it.
+Double-Alt: the `WH_KEYBOARD_LL` hook reads `panel_open` and emits
+`close-request {source:"alt"}` or `open-request {source:"alt", pinned:true}`;
+the old `toggle-request` path is gone. Escape (`0x1B`) on an open panel emits
+`close-request {source:"esc"}`. A new `WH_MOUSE_LL` thread + message loop emits
+`close-request {source:"outside"}` on L/R/M down outside the stored panel rect,
+but only when the panel is open *and* pinned (hover opens stay unpinned). No key
+or click is ever swallowed. `AltTapTracker::reset()` has two unit tests.
+Logging: `double alt: panel_open=…, emitting …`, every `close-request` with its
+source, every tracker reset.
+Frontend: `close-request` runs the existing `close()` (which also clears the
+pin); `open-request` honours `pinned` from Rust (hover false, Alt/tray true) and
+focuses on keyboard open (best effort — Esc does not need focus). The
+`toggle-request` listener/decision was removed. `AppState` panel rect has tests
+at 100/125/150% and offset monitors.
+Half-done / follow-ups:
+- Close decisions keep `panel_open` true until the frontend reports `idle`
+  (~250 ms after the close animation), so a rapid second double-Alt during the
+  animation closes again instead of reopening.
+- Outside-click close is pinned-only by design; the settings view opened from
+  the tray is pinned, hover settings is not.
+- Alt-menu suppression (inject unassigned VK) is still not implemented.
 
 ## Last session (live settings & unmistakable toggles)
 Done: `settingsVersion` (current 2) on `AppSettings` (`#[serde(default)]` → 0
@@ -318,3 +349,4 @@ Half-done / follow-ups:
 - Triggers: physical-px `in_hot_zone` + new `DwellTracker`, closed-only `open-request {source:"hover"}`, unpinned hover open.
 - Settings: single-value `Toggle` (white/black on, #303030/#9a9a9a off), four toggles default true, serde defaults for partial settings.json.
 - Settings: `settingsVersion` 2 migration, live `RwLock` state for both triggers, suppression-reason logs, redesigned toggle (white/#000 on, #2a2a2a/#8a8a8a off, dimmed label, focus ring), optimistic save + revert.
+- Panel state: `AppState` open/pinned/rect, double-Alt decides open/close in Rust, Esc + outside-click `close-request`, Alt tracker reset on open/close.

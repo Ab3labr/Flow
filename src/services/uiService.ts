@@ -5,11 +5,17 @@ import { isTauriApp } from "./env";
 
 export type UiMode = "idle" | "pill" | "open";
 
-export type OpenRequest = { tab?: string; source?: "hover" };
+export type OpenRequest = {
+  tab?: string;
+  source?: "hover" | "alt" | "tray";
+  pinned?: boolean;
+};
 
-export function setUiMode(mode: UiMode, panelHeight: number): void {
+export type CloseRequest = { source?: "alt" | "esc" | "outside" };
+
+export function setUiMode(mode: UiMode, panelHeight: number, pinned = false): void {
   if (!isTauriApp) return;
-  void invoke("set_ui_mode", { mode, panelHeight }).catch((error) => {
+  void invoke("set_ui_mode", { mode, panelHeight, pinned }).catch((error) => {
     console.error("set_ui_mode failed", error);
   });
 }
@@ -21,11 +27,11 @@ export function onOpenRequest(handler: (request: OpenRequest) => void): Promise<
   });
 }
 
-/** Rust double-Alt hook: toggle the panel open (pinned) or closed. */
-export function onToggleRequest(handler: () => void): Promise<() => void> {
+/** Rust decisions: close on double-Alt, Esc, or an outside click. */
+export function onCloseRequest(handler: (request: CloseRequest) => void): Promise<() => void> {
   if (!isTauriApp) return Promise.resolve(() => {});
-  return listen<{ source?: string } | null>("toggle-request", () => {
-    handler();
+  return listen<CloseRequest | null>("close-request", (event) => {
+    handler(event.payload ?? {});
   });
 }
 

@@ -4,6 +4,7 @@
 //! click-through. Geometry is pure so DPI behaviour is unit-tested.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use tauri::{Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
 
 /// Extra height below the panel (shadow bleed).
@@ -14,14 +15,108 @@ pub const PILL_HEIGHT: f64 = 90.0;
 /// Collapsed bar size from the design (hidden in idle).
 pub const IDLE_WIDTH: f64 = 120.0;
 pub const IDLE_HEIGHT: f64 = 4.0;
+/// Visible panel width from the design (the window is wider for the bleed).
+pub const PANEL_WIDTH_LOGICAL: f64 = 480.0;
 
 /// Last mode the frontend asked for. Idle is the only "closed" state, so a
-/// live pill still counts as open for trigger purposes.
+/// live pill still counts as open for hover-trigger purposes.
 static PANEL_CLOSED: AtomicBool = AtomicBool::new(true);
 
 /// True while the panel is idle (hidden), i.e. hover may open it.
 pub fn is_closed() -> bool {
   PANEL_CLOSED.load(Ordering::Relaxed)
+}
+
+/// Physical-px rectangle of the visible panel itself (no shadow bleed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PanelRect {
+  pub x: i32,
+  pub y: i32,
+  pub width: i32,
+  pub height: i32,
+}
+
+impl PanelRect {
+  /// Half-open like the window geometry: right/bottom edges are outside.
+  pub fn contains(&self, x: i32, y: i32) -> bool {
+    self.width > 0
+      && self.height > 0
+      && x >= self.x
+      && x < self.x + self.width
+      && y >= self.y
+      && y < self.y + self.height
+  }
+}
+
+/// Panel height (logical px, as reported by the frontend) + its screen rect.
+#[derive(Debug, Clone, Copy, Default)]
+struct PanelInfo {
+  height: f64,
+  rect: PanelRect,
+}
+
+/// Rust-owned panel state. Managed with `app.manage(...)`; the trigger hooks
+/// read it to decide open/close without asking the frontend.
+#[derive(Default)]
+pub struct AppState {
+  panel_open: AtomicBool,
+  panel_pinned: AtomicBool,
+  panel: Mutex<PanelInfo>,
+}
+
+impl AppState {
+  /// True only in `UiMode::Open` (a live pill is not an open panel).
+  pub fn is_open(&self) -> bool {
+    self.panel_open.load(Ordering::Relaxed)
+  }
+
+  /// True when the open panel was opened pinned (keyboard, tray, click).
+  pub fn is_pinned(&self) -> bool {
+    self.panel_pinned.load(Ordering::Relaxed)
+  }
+
+  #[allow(dead_code)]
+  pub fn panel_height(&self) -> f64 {
+    self.lock_info().height
+  }
+
+  /// Screen rect of the visible panel in physical px.
+  pub fn panel_rect(&self) -> PanelRect {
+    self.lock_info().rect
+  }
+
+  fn lock_info(&self) -> std::sync::MutexGuard<'_, PanelInfo> {
+    match self.panel.lock() {
+      Ok(guard) => guard,
+      Err(poisoned) => poisoned.into_inner(),
+    }
+  }
+
+  fn set(&self, open: bool, pinned: bool, height: f64, rect: PanelRect) {
+    self.panel_open.store(open, Ordering::Relaxed);
+    self.panel_pinned.store(pinned, Ordering::Relaxed);
+    let mut info = self.lock_info();
+    info.height = height;
+    info.rect = rect;
+  }
+}
+
+/// Panel rect centered on the monitor's top edge, in physical px.
+pub fn panel_screen_rect(
+  panel_height: f64,
+  monitor_x: i32,
+  monitor_y: i32,
+  monitor_width: u32,
+  scale_factor: f64,
+) -> PanelRect {
+  let width = (PANEL_WIDTH_LOGICAL * scale_factor).round() as i32;
+  let height = (panel_height.max(0.0) * scale_factor).round() as i32;
+  PanelRect {
+    x: monitor_x + (monitor_width as i32 - width) / 2,
+    y: monitor_y,
+    width,
+    height,
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,8 +175,14 @@ pub fn window_rect(
 }
 
 /// Applies `mode` to the window, anchored to the monitor under the cursor.
-pub fn apply(window: &WebviewWindow, mode: UiMode, panel_height: f64) -> Result<(), String> {
-  PANEL_CLOSED.store(mode == UiMode::Idle, Ordering::Relaxed);
+/// Also records open/pinned + the panel rect for the trigger hooks.
+pub fn apply(
+  window: &WebviewWindow,
+  state: &AppState,
+  mode: UiMode,
+  panel_height: f64,
+  pinned: bool,
+) -> Result<(), String> {
   let app = window.app_handle();
   let cursor = app.cursor_position().map_err(|err| err.to_string())?;
   let monitor = app
@@ -93,6 +194,13 @@ pub fn apply(window: &WebviewWindow, mode: UiMode, panel_height: f64) -> Result<
 
   let rect = window_rect(
     mode,
+    panel_height,
+    monitor.position().x,
+    monitor.position().y,
+    monitor.size().width,
+    monitor.scale_factor(),
+  );
+  let panel = panel_screen_rect(
     panel_height,
     monitor.position().x,
     monitor.position().y,
@@ -122,12 +230,33 @@ pub fn apply(window: &WebviewWindow, mode: UiMode, panel_height: f64) -> Result<
     }
   }
 
+  PANEL_CLOSED.store(mode == UiMode::Idle, Ordering::Relaxed);
+  let open = mode == UiMode::Open;
+  let was_open = state.is_open();
+  state.set(open, open && pinned, panel_height, panel);
+  if was_open != open {
+    // Re-arm the double-Alt tracker: a missed Alt-up cannot leave it stuck.
+    crate::triggers::reset_alt_tracker(if open { "panel opened" } else { "panel closed" });
+  }
+
   Ok(())
 }
 
 #[tauri::command]
-pub fn set_ui_mode(window: WebviewWindow, mode: String, panel_height: f64) -> Result<(), String> {
-  apply(&window, UiMode::parse(&mode)?, panel_height)
+pub fn set_ui_mode(
+  window: WebviewWindow,
+  state: tauri::State<'_, AppState>,
+  mode: String,
+  panel_height: f64,
+  pinned: bool,
+) -> Result<(), String> {
+  apply(
+    &window,
+    state.inner(),
+    UiMode::parse(&mode)?,
+    panel_height,
+    pinned,
+  )
 }
 
 #[cfg(test)]
@@ -184,5 +313,41 @@ mod tests {
   fn rejects_unknown_mode() {
     assert!(UiMode::parse("open").is_ok());
     assert!(UiMode::parse("closed").is_err());
+  }
+
+  #[test]
+  fn panel_rect_is_480_logical_and_centered() {
+    let rect = panel_screen_rect(172.0, 0, 0, 1920, 1.0);
+    assert_eq!(rect.width, 480);
+    assert_eq!(rect.height, 172);
+    assert_eq!(rect.x, (1920 - 480) / 2);
+    assert_eq!(rect.y, 0);
+    assert!(rect.contains(720, 0));
+    assert!(rect.contains(1199, 171));
+    assert!(!rect.contains(719, 0));
+    assert!(!rect.contains(1200, 0));
+    assert!(!rect.contains(720, 172));
+  }
+
+  #[test]
+  fn panel_rect_scales_and_follows_the_monitor() {
+    let rect = panel_screen_rect(340.0, 1920, -180, 2560, 1.25);
+    assert_eq!(rect.width, 600);
+    assert_eq!(rect.height, 425);
+    assert_eq!(rect.x, 1920 + (2560 - 600) / 2);
+    assert_eq!(rect.y, -180);
+
+    let hidpi = panel_screen_rect(172.0, 0, 0, 1920, 1.5);
+    assert_eq!((hidpi.width, hidpi.height), (720, 258));
+    assert_eq!(hidpi.x, (1920 - 720) / 2);
+  }
+
+  #[test]
+  fn app_state_defaults_to_closed_and_unpinned() {
+    let state = AppState::default();
+    assert!(!state.is_open());
+    assert!(!state.is_pinned());
+    assert_eq!(state.panel_rect(), PanelRect::default());
+    assert!(!state.panel_rect().contains(0, 0));
   }
 }

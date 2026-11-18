@@ -14,8 +14,8 @@ import {
 import { isTauriApp } from "../services/env";
 import {
   focusNotchWindow,
+  onCloseRequest,
   onOpenRequest,
-  onToggleRequest,
   setUiMode,
   type UiMode,
 } from "../services/uiService";
@@ -167,12 +167,12 @@ export function Notch() {
   // expands; idle is only sent after the close animation has finished.
   useEffect(() => {
     if (uiMode !== "idle") {
-      setUiMode(uiMode, panelHeight);
+      setUiMode(uiMode, panelHeight, pinned);
       return;
     }
-    const id = window.setTimeout(() => setUiMode("idle", panelHeight), 250);
+    const id = window.setTimeout(() => setUiMode("idle", panelHeight, false), 250);
     return () => window.clearTimeout(id);
-  }, [uiMode, panelHeight]);
+  }, [uiMode, panelHeight, pinned]);
 
   useEffect(() => {
     let disposed = false;
@@ -180,11 +180,15 @@ export function Notch() {
     void onOpenRequest((request) => {
       window.clearTimeout(hoverTimer.current);
       window.clearTimeout(leaveTimer.current);
-      // Hover opens unpinned so the 400 ms leave timer still closes it;
-      // tray/other opens stay pinned until dismissed.
-      setPinned(request.source !== "hover");
+      // Rust decides pinning: hover is unpinned, keyboard/tray are pinned.
+      setPinned(request.pinned ?? request.source !== "hover");
       setExpanded(true);
       if (request.tab && isTabId(request.tab)) setTab(request.tab);
+      if (request.source === "alt") {
+        // Best effort: Esc works without focus because Rust owns the hook.
+        window.clearTimeout(focusTimer.current);
+        focusTimer.current = window.setTimeout(focusNotchWindow, 80);
+      }
     }).then((stop) => {
       if (disposed) stop();
       else unlisten = stop;
@@ -201,23 +205,13 @@ export function Notch() {
     setExpanded(false);
   }, []);
 
-  // Rust owns double-Alt in the real app (low-level hook); this event is the
-  // only toggle path there, so it must not fight the JS keyboard sequence.
+  // Rust is the source of truth: double-Alt, Esc and outside clicks arrive as
+  // close-request. The frontend obeys and clears the pin (close does both).
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void onToggleRequest(() => {
-      if (expandedRef.current) {
-        close();
-        return;
-      }
-      window.clearTimeout(hoverTimer.current);
-      window.clearTimeout(leaveTimer.current);
-      setPinned(true);
-      setExpanded(true);
-      // set_ui_mode shows the window; focus once it is visible.
-      window.clearTimeout(focusTimer.current);
-      focusTimer.current = window.setTimeout(focusNotchWindow, 80);
+    void onCloseRequest(() => {
+      close();
     }).then((stop) => {
       if (disposed) stop();
       else unlisten = stop;

@@ -111,8 +111,9 @@ panel expands; shrink ~250 ms after the close animation. Never leave a large
 transparent window capturing clicks. Startup mode is idle. Rust still owns
 `panel-state` for pill sources (timer done, recording, meeting reminder).
 
-Intents frontend→Rust: `set_ui_mode` command (geometry/input), settings
-commands. Rust→frontend: `open-request` (tray/second-instance/hot zone),
+Intents frontend→Rust: `set_ui_mode` command (geometry/input/pinned), settings
+commands. Rust→frontend: `open-request` (tray/hot zone/double-Alt),
+`close-request` (double-Alt/Esc/outside click),
 `panel-state` (open/pill/tab hints),
 `timer-state`, `media-state`, `notes-changed`, `calendar-changed`,
 `recording-state`, `meeting-reminder`, `settings-changed`.
@@ -120,8 +121,12 @@ commands. Rust→frontend: `open-request` (tray/second-instance/hot zone),
 Focus: `set_focus()` only for pinned/shortcut opens and when the Notes
 tab needs typing; hover/pill opens do not steal focus.
 
-Close-on-outside-click: webview can't see outside clicks → Rust watches
-window blur (`Focused` event) → emit `close-request` → frontend `close()`.
+Close-on-outside-click: `WH_MOUSE_LL` (own thread + message loop) reads the
+Rust-owned panel rect; an outside L/R/M down while the panel is open *and
+pinned* emits `close-request {source:"outside"}`. The click is never swallowed.
+Hover-opened panels stay unpinned and keep the 400 ms leave-close.
+Rust owns `panel_open` / `panel_pinned` / panel rect (`AppState`), updated by
+`set_ui_mode`.
 
 ### Triggers (Phase 2)
 - Cursor poll thread ~60 Hz: `GetCursorPos` (physical px), the monitor under
@@ -133,15 +138,20 @@ window blur (`Focused` event) → emit `close-request` → frontend `close()`.
   fullscreen app is in front. Fullscreen means the foreground window's rect
   equals the whole monitor rect and its class is not Progman / WorkerW /
   Shell_TrayWnd, so maximized windows and the desktop never count.
-- Hot zone emits `open-request {source:"hover"}` only while the panel is
-  closed (idle). The frontend opens it unpinned, so the 400 ms leave timer
+- Hot zone emits `open-request {source:"hover", pinned:false}` only while the
+  panel is idle. The frontend opens it unpinned, so the 400 ms leave timer
   still closes it. The JS 1 px hot-zone strip is browser-prototype only.
 - Keyboard hook thread: `WH_KEYBOARD_LL` + message loop. Pure
   `AltTapTracker` (350 ms window, any other key resets) + `Shortcut`
-  parser for `settings.shortcut`. On Alt keydown inject an unassigned virtual key (not F24) via
-  `SendInput` to suppress menu-bar activation (verify on PC with Alt+Tab, Alt+F4, Alt+Space). Emits
-  `toggle-request`.
-- Unit tests: `cargo test` on pure trackers/parser.
+  parser for `settings.shortcut`. On double-Alt Rust decides from
+  `AppState.panel_open`: `close-request {source:"alt"}` or
+  `open-request {source:"alt", pinned:true}`. Escape closes an open panel
+  (`close-request {source:"esc"}`); both keys always pass through. The tracker
+  is reset whenever the panel opens or closes so a missed Alt-up cannot stick.
+- Mouse hook thread: outside-click close as described above.
+- Alt-menu suppression (inject an unassigned virtual key, not F24) is still
+  pending; verify on PC with Alt+Tab, Alt+F4, Alt+Space.
+- Unit tests: `cargo test` on pure trackers/parser/rects.
 
 ### Persistence
 `%APPDATA%\Float\settings.json` via `app.path().app_config_dir()`:

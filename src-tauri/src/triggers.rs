@@ -8,6 +8,20 @@
 
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "windows")]
+use tauri::Emitter;
+
+/// Logs and emits `close-request {source}`. Rust owns the open/close decision;
+/// the frontend just obeys.
+#[cfg(target_os = "windows")]
+pub fn emit_close_request(app: &tauri::AppHandle, source: &str) {
+  log::info!("close-request: source={source}");
+  if let Err(err) = app.emit("close-request", serde_json::json!({ "source": source })) {
+    log::warn!("failed to emit close-request: {err}");
+  }
+}
+
+
 /// Continuous dwell required before opening, in milliseconds.
 pub const DWELL_MS: u64 = 180;
 
@@ -36,6 +50,14 @@ impl AltTapTracker {
       window: Duration::from_millis(window_ms),
     }
   }
+  /// Clears any partial tap so a missed Alt-up cannot leave the tracker stuck.
+  pub fn reset(&mut self) {
+    self.alt_down = false;
+    self.clean = true;
+    self.pressed_at = None;
+    self.last_tap_at = None;
+  }
+
   /// Returns true when a double-tap completes.
   pub fn on_event(&mut self, ev: KeyEvent, now: Instant) -> bool {
     match ev {
@@ -277,7 +299,12 @@ mod imp {
           // open; the event only goes out when the panel is closed.
           if tracker.update(inside, blocked, now) && crate::window_mode::is_closed() {
             log::info!("hot zone dwell reached, emitting open-request (hover)");
-            if let Err(err) = app.emit("open-request", serde_json::json!({ "source": "hover" })) {
+            if let Err(err) =
+              app.emit(
+                "open-request",
+                serde_json::json!({ "source": "hover", "pinned": false }),
+              )
+            {
               log::warn!("failed to emit open-request: {err}");
             }
           }
@@ -321,10 +348,11 @@ pub const ALT_TAP_WINDOW_MS: u64 = 350;
 
 #[cfg(target_os = "windows")]
 mod alt_hook {
-  use super::{AltTapTracker, KeyEvent, ALT_TAP_WINDOW_MS};
-  use std::cell::RefCell;
+  use super::{emit_close_request, AltTapTracker, KeyEvent, ALT_TAP_WINDOW_MS};
+  use crate::window_mode::AppState;
+  use std::sync::{Mutex, MutexGuard};
   use std::time::Instant;
-  use tauri::Emitter;
+  use tauri::{Emitter, Manager};
   use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
   use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, SetWindowsHookExW,
@@ -334,16 +362,26 @@ mod alt_hook {
   const VK_MENU: u32 = 0x12;
   const VK_LMENU: u32 = 0xA4;
   const VK_RMENU: u32 = 0xA5;
+  const VK_ESCAPE: u32 = 0x1B;
 
   struct HookState {
     tracker: AltTapTracker,
     app: tauri::AppHandle,
   }
 
-  thread_local! {
-    /// The hook is called on the thread that installed it, so a thread-local
-    /// keeps the callback lock-free.
-    static STATE: RefCell<Option<HookState>> = const { RefCell::new(None) };
+  /// A mutex (not thread-local) so `set_ui_mode` can reset the tracker when
+  /// the panel opens or closes. Keyboard events are low frequency.
+  static STATE: Mutex<Option<HookState>> = Mutex::new(None);
+
+  fn lock_state() -> MutexGuard<'static, Option<HookState>> {
+    match STATE.lock() {
+      Ok(guard) => guard,
+      Err(poisoned) => poisoned.into_inner(),
+    }
+  }
+
+  fn current_app() -> Option<tauri::AppHandle> {
+    lock_state().as_ref().map(|state| state.app.clone())
   }
 
   fn is_alt(vk: u32) -> bool {
@@ -364,6 +402,25 @@ mod alt_hook {
         let up = message == WM_KEYUP || message == WM_SYSKEYUP;
         if down || up {
           let alt = is_alt(info.vkCode);
+          if alt {
+            log::info!(
+              "alt {} (vk 0x{:X})",
+              if down { "down" } else { "up" },
+              info.vkCode
+            );
+          }
+
+          // Escape closes an open panel even when the webview has no focus.
+          if down && info.vkCode == VK_ESCAPE {
+            if let Some(app) = current_app() {
+              if app.state::<AppState>().is_open() {
+                emit_close_request(&app, "esc");
+              } else {
+                log::debug!("escape ignored (panel closed)");
+              }
+            }
+          }
+
           let event = match (alt, down) {
             (true, true) => Some(KeyEvent::AltDown),
             (true, false) => Some(KeyEvent::AltUp),
@@ -371,31 +428,37 @@ mod alt_hook {
             (false, false) => None,
           };
           if let Some(event) = event {
-            if alt {
-              log::info!(
-                "alt {} (vk 0x{:X})",
-                if down { "down" } else { "up" },
-                info.vkCode
-              );
-            }
-            let fire = STATE.with(|cell| {
-              let mut slot = cell.borrow_mut();
-              let state = slot.as_mut()?;
-              state
-                .tracker
-                .on_event(event, Instant::now())
-                .then(|| state.app.clone())
-            });
+            let fire = {
+              let mut guard = lock_state();
+              guard.as_mut().and_then(|state| {
+                state
+                  .tracker
+                  .on_event(event, Instant::now())
+                  .then(|| state.app.clone())
+              })
+            };
             if let Some(app) = fire {
               // Live setting: no restart needed when the toggle changes.
               if !crate::settings::alt_alt() {
                 log::debug!("double alt ignored (altAlt off)");
               } else {
-                log::info!("double alt detected, emitting toggle-request");
-                if let Err(err) =
-                  app.emit("toggle-request", serde_json::json!({ "source": "alt" }))
-                {
-                  log::warn!("failed to emit toggle-request: {err}");
+                // Rust decides: open when closed, close when open.
+                let open = app.state::<AppState>().is_open();
+                log::info!(
+                  "double alt: panel_open={open}, emitting {}",
+                  if open {
+                    "close-request (alt)"
+                  } else {
+                    "open-request (pinned)"
+                  }
+                );
+                if open {
+                  emit_close_request(&app, "alt");
+                } else if let Err(err) = app.emit(
+                  "open-request",
+                  serde_json::json!({ "source": "alt", "pinned": true }),
+                ) {
+                  log::warn!("failed to emit open-request: {err}");
                 }
               }
             }
@@ -407,6 +470,16 @@ mod alt_hook {
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
   }
 
+  /// Re-arms the double-Alt sequence. Called by `set_ui_mode` whenever the
+  /// panel opens or closes.
+  pub fn reset_tracker(reason: &str) {
+    let mut guard = lock_state();
+    if let Some(state) = guard.as_mut() {
+      state.tracker.reset();
+      log::info!("alt tracker reset ({reason})");
+    }
+  }
+
   /// Installs the low-level keyboard hook on its own thread. The thread must
   /// run a message loop or the hook is never called. `altAlt` is checked live
   /// on every event, so the hook is always installed.
@@ -414,15 +487,13 @@ mod alt_hook {
     let spawned = std::thread::Builder::new()
       .name("float-alt-hook".into())
       .spawn(move || {
-        STATE.with(|cell| {
-          *cell.borrow_mut() = Some(HookState {
-            tracker: AltTapTracker::new(ALT_TAP_WINDOW_MS),
-            app,
-          });
+        *lock_state() = Some(HookState {
+          tracker: AltTapTracker::new(ALT_TAP_WINDOW_MS),
+          app,
         });
 
-        // SAFETY: thread-local state is in place; hMod is NULL for a
-        // low-level hook, which also ties the hook to this thread.
+        // SAFETY: hook state is in place; hMod is NULL for a low-level hook,
+        // which also ties the hook to this thread.
         let hook = match unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), None, 0) } {
           Ok(hook) => hook,
           Err(err) => {
@@ -448,7 +519,7 @@ mod alt_hook {
 
         // SAFETY: `hook` came from SetWindowsHookExW on this thread.
         let _ = unsafe { UnhookWindowsHookEx(hook) };
-        STATE.with(|cell| *cell.borrow_mut() = None);
+        *lock_state() = None;
         log::info!("keyboard hook removed");
       });
 
@@ -459,7 +530,101 @@ mod alt_hook {
 }
 
 #[cfg(target_os = "windows")]
-pub use alt_hook::start as start_alt_hook;
+pub use alt_hook::{reset_tracker as reset_alt_tracker, start as start_alt_hook};
+
+#[cfg(not(target_os = "windows"))]
+pub fn reset_alt_tracker(_reason: &str) {}
+
+/// Low-level mouse hook: closes a pinned open panel on an outside click.
+#[cfg(target_os = "windows")]
+mod mouse_hook {
+  use super::emit_close_request;
+  use crate::window_mode::AppState;
+  use std::cell::RefCell;
+  use tauri::Manager;
+  use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+  use windows::Win32::UI::WindowsAndMessaging::{
+    CallNextHookEx, GetMessageW, MSLLHOOKSTRUCT, MSG, SetWindowsHookExW, UnhookWindowsHookEx,
+    WH_MOUSE_LL, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_RBUTTONDOWN,
+  };
+
+  thread_local! {
+    /// The hook is called on the thread that installed it.
+    static APP: RefCell<Option<tauri::AppHandle>> = const { RefCell::new(None) };
+  }
+
+  /// Pinned + open + click outside the stored panel rect. Hover-opened panels
+  /// are unpinned and keep their 400 ms leave-close instead.
+  fn should_close(app: &tauri::AppHandle, x: i32, y: i32) -> bool {
+    let state = app.state::<AppState>();
+    state.is_open() && state.is_pinned() && !state.panel_rect().contains(x, y)
+  }
+
+  /// `WH_MOUSE_LL` callback. The click is never swallowed.
+  unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0 {
+      let message = wparam.0 as u32;
+      if matches!(message, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN) {
+        // SAFETY: for `WH_MOUSE_LL` with `code >= 0` the system passes an
+        // MSLLHOOKSTRUCT pointer.
+        let info = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
+        let point = info.pt;
+        if let Some(app) = APP.with(|cell| cell.borrow().clone()) {
+          if should_close(&app, point.x, point.y) {
+            emit_close_request(&app, "outside");
+          }
+        }
+      }
+    }
+    // SAFETY: plain pass-through; the hook never swallows a click.
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+  }
+
+  /// Installs the mouse hook on its own thread with a message loop.
+  pub fn start(app: tauri::AppHandle) {
+    let spawned = std::thread::Builder::new()
+      .name("float-mouse-hook".into())
+      .spawn(move || {
+        APP.with(|cell| *cell.borrow_mut() = Some(app));
+
+        // SAFETY: hMod is NULL for a low-level hook, which ties it to this
+        // thread and its message loop.
+        let hook = match unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), None, 0) } {
+          Ok(hook) => hook,
+          Err(err) => {
+            log::error!("failed to install mouse hook: {err}");
+            return;
+          }
+        };
+        log::info!("mouse hook installed (outside-click close)");
+
+        let mut message = MSG::default();
+        loop {
+          // SAFETY: blocking wait; the low-level hook runs while we wait here.
+          let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
+          if result.0 == 0 {
+            break;
+          }
+          if result.0 == -1 {
+            log::error!("mouse hook message loop failed");
+            break;
+          }
+        }
+
+        // SAFETY: `hook` came from SetWindowsHookExW on this thread.
+        let _ = unsafe { UnhookWindowsHookEx(hook) };
+        APP.with(|cell| *cell.borrow_mut() = None);
+        log::info!("mouse hook removed");
+      });
+
+    if let Err(err) = spawned {
+      log::error!("failed to start mouse hook thread: {err}");
+    }
+  }
+}
+
+#[cfg(target_os = "windows")]
+pub use mouse_hook::start as start_mouse_hook;
 
 #[cfg(test)]
 mod tests {
@@ -659,5 +824,29 @@ mod tests {
     let mut tracker = AltTapTracker::new(WINDOW);
     assert!(!tracker.on_event(KeyEvent::AltUp, at(base, 0)));
     assert!(!tracker.on_event(KeyEvent::AltUp, at(base, 10)));
+  }
+
+  #[test]
+  fn reset_clears_a_partial_double_tap() {
+    let base = Instant::now();
+    let mut tracker = AltTapTracker::new(WINDOW);
+    assert!(!tap(&mut tracker, base, 0));
+    tracker.reset();
+    // The tap from before the reset no longer counts.
+    assert!(!tap(&mut tracker, base, 100));
+    assert!(tap(&mut tracker, base, 200));
+  }
+
+  #[test]
+  fn reset_clears_a_held_alt() {
+    let base = Instant::now();
+    let mut tracker = AltTapTracker::new(WINDOW);
+    assert!(!tracker.on_event(KeyEvent::AltDown, at(base, 0)));
+    tracker.reset();
+    // The Alt-up for the key held across the reset is ignored...
+    assert!(!tracker.on_event(KeyEvent::AltUp, at(base, 50)));
+    // ...and a fresh double tap still fires.
+    assert!(!tap(&mut tracker, base, 100));
+    assert!(tap(&mut tracker, base, 200));
   }
 }

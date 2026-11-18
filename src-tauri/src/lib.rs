@@ -46,11 +46,23 @@ pub fn run() {
 
       let window = app.get_webview_window("main").unwrap();
 
+      // Rust owns open/pinned/rect for the close triggers.
+      app.manage(window_mode::AppState::default());
+
       // Startup mode is idle: hidden and click-through.
-      if let Err(err) = window_mode::apply(&window, window_mode::UiMode::Idle, 0.0) {
-        log::warn!("failed to apply startup idle mode: {err}");
-        let _ = window.set_ignore_cursor_events(true);
-        let _ = window.hide();
+      {
+        let state = app.state::<window_mode::AppState>();
+        if let Err(err) = window_mode::apply(
+          &window,
+          state.inner(),
+          window_mode::UiMode::Idle,
+          0.0,
+          false,
+        ) {
+          log::warn!("failed to apply startup idle mode: {err}");
+          let _ = window.set_ignore_cursor_events(true);
+          let _ = window.hide();
+        }
       }
 
       let handle = app.handle();
@@ -64,12 +76,18 @@ pub fn run() {
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id().as_ref() {
           "open-float" => {
-            if let Err(err) = app.emit("open-request", ()) {
+            if let Err(err) = app.emit(
+              "open-request",
+              serde_json::json!({ "source": "tray", "pinned": true }),
+            ) {
               log::warn!("failed to emit open-request: {err}");
             }
           }
           "settings" => {
-            if let Err(err) = app.emit("open-request", serde_json::json!({ "tab": "settings" })) {
+            if let Err(err) = app.emit(
+              "open-request",
+              serde_json::json!({ "tab": "settings", "source": "tray", "pinned": true }),
+            ) {
               log::warn!("failed to emit open-request: {err}");
             }
           }
@@ -90,7 +108,8 @@ pub fn run() {
         let handle = app.handle().clone();
         tauri::async_runtime::spawn(async move {
           triggers::start(handle.clone());
-          triggers::start_alt_hook(handle);
+          triggers::start_alt_hook(handle.clone());
+          triggers::start_mouse_hook(handle);
         });
       }
 
