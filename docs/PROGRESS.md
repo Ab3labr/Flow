@@ -20,8 +20,8 @@ not started / in progress / done / blocked
 - [x] Window: frameless/transparent/always-on-top/skip-taskbar, ~560x400
 - [x] Window positioning: top-center of cursor monitor, ignore-cursor-events when closed
 - [x] Single instance (Windows mutex)
-- [x] Tray icon: Open Float / Settings / Quit (`TrayIconBuilder`; emits `open-request`)
-- [x] `settings.json` persistence (`settings_get`/`settings_set` commands)
+- [ ] Tray icon: Open Float / Settings / Quit (`TrayIconBuilder`; emits `open-request`)
+- [ ] `settings.json` persistence (`settings_get`/`settings_set` commands)
 - [x] SettingsView wired to real settingsService
 - [x] `cargo check` + `pnpm tauri build` smoke test
 
@@ -29,7 +29,8 @@ not started / in progress / done / blocked
 - [x] Rust cursor poll ~60 Hz, 240x4 px zone, 180 ms dwell, mouse-button +
       fullscreen suppression
 - [ ] WH_KEYBOARD_LL hook thread: double-Alt 350 ms, custom shortcut parse,
-      Alt menu suppression (F24 inject — verify)
+      Alt menu suppression (inject an unassigned virtual key — see
+      DECISIONS.md)
 - [ ] Pure functions + `cargo test` (dwell, alt-tap, shortcut)
 - [ ] Frontend consumes `open-request`/`toggle-request` events
 
@@ -120,7 +121,6 @@ Tauri 2 shell scaffolded:
 - Single instance enforced via Windows mutex (com.float.app.windows)
 - Settings file creation/load/save implemented (atomic temp+rename), stores NotchSettings, notesFolder, calendarAccounts, timerCustomTimes
 - Commands: settings_get, settings_set
-- Build succeeds (debug bundle produces MSI and NSIS installers)
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
 
 ## Last session (settings persistence)

@@ -89,7 +89,6 @@ pub fn run() {
     .expect("error while building tauri application");
 }
 
-#[cfg(target_os = "windows")]
 mod settings {
   use serde::{Deserialize, Serialize};
   use std::fs;
@@ -173,7 +172,6 @@ mod settings {
   }
 }
 
-#[cfg(target_os = "windows")]
 use settings::AppSettings;
 
 #[tauri::command]
