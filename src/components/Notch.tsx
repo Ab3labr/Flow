@@ -8,6 +8,7 @@ import {
   calendarService,
   mediaService,
 } from "../services/mockServices";
+import { onOpenRequest, setUiMode, type UiMode } from "../services/uiService";
 import { CalendarView } from "./CalendarView";
 import { CaptureView } from "./CaptureView";
 import { EventCard, JoinButton } from "./EventCard";
@@ -24,6 +25,11 @@ const baseHeights: Record<Exclude<TabId, "notes">, number> = {
   capture: 185,
   settings: 340,
 };
+
+const isTabId = (value: string): value is TabId =>
+  (["home", "timer", "calendar", "notes", "capture", "settings"] as const).includes(
+    value as TabId,
+  );
 
 function IdleHome({
   onTimer,
@@ -115,10 +121,41 @@ export function Notch() {
   const upcomingEvent = settings.upcomingEvent ? events[0] : undefined;
   const livePill = recording || timerComplete || Boolean(reminderEvent);
   const panelHeight = tab === "notes" ? notesHeight : baseHeights[tab];
+  const uiMode: UiMode = expanded ? "open" : livePill ? "pill" : "idle";
 
   useEffect(() => {
     expandedRef.current = expanded;
   }, [expanded]);
+
+  // Report the window model to Rust. Open/pill resizes apply before Motion
+  // expands; idle is only sent after the close animation has finished.
+  useEffect(() => {
+    if (uiMode !== "idle") {
+      setUiMode(uiMode, panelHeight);
+      return;
+    }
+    const id = window.setTimeout(() => setUiMode("idle", panelHeight), 250);
+    return () => window.clearTimeout(id);
+  }, [uiMode, panelHeight]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void onOpenRequest((requestedTab) => {
+      window.clearTimeout(hoverTimer.current);
+      window.clearTimeout(leaveTimer.current);
+      setPinned(true);
+      setExpanded(true);
+      if (requestedTab && isTabId(requestedTab)) setTab(requestedTab);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!playing) return;

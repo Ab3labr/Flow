@@ -99,26 +99,23 @@ logical (max panel + shadow), horizontally centered on the monitor under
 the cursor, y=0. Because it is centered for every width, panel
 `left-1/2 -translate-x-1/2` stays screen-centered at any window width.
 
-State-driven geometry + input (Rust owns, frontend reports):
-- **idle/closed:** `set_ignore_cursor_events(true)` — clicks pass through.
-  Window stays visible (avoids WebView2 suspend); verify idle CPU, else
-  `hide()`.
-- **pill active:** shrink window to ~200x90 centered, ignore=false.
-- **open:** max size 560x400, ignore=false.
+State-driven geometry + input (Rust owns, frontend reports via the
+`set_ui_mode(mode, panel_height)` command):
+- **idle:** `set_ignore_cursor_events(true)` and hidden.
+- **pill:** 200x90 logical, input accepted (ignore=false).
+- **open:** 560 x (panel height + 40) logical, input accepted.
 
-Window height follows panel height + 40 px bleed (grow before expand, shrink after close). Never leave a large transparent window capturing clicks.
+Every mode is horizontally centered, y=0, on the monitor under the cursor,
+computed in physical px with that monitor's `scale_factor`. Grow before the
+panel expands; shrink ~250 ms after the close animation. Never leave a large
+transparent window capturing clicks. Startup mode is idle. Rust still owns
+`panel-state` for pill sources (timer done, recording, meeting reminder).
 
-Frontend computes desired mode → emits `ui-mode` event payload
-`{mode: "idle"|"pill"|"open"}`; Rust applies size/position/ignore. Rust
-also shows window + emits `panel-state` for pill sources it owns (timer
-done, recording, meeting reminder) so pills appear while the panel is
-closed.
-
-Intents frontend→Rust: `open-request` (from tray/second-instance),
-`ui-mode`. Rust→frontend: `panel-state` (open/pill/tab hints),
+Intents frontend→Rust: `set_ui_mode` command (geometry/input), settings
+commands. Rust→frontend: `open-request` (tray/second-instance/hot zone),
+`panel-state` (open/pill/tab hints),
 `timer-state`, `media-state`, `notes-changed`, `calendar-changed`,
-`recording-state`, `meeting-reminder`, `settings-changed`,
-`open-request` (tray "Open Float"/"Settings").
+`recording-state`, `meeting-reminder`, `settings-changed`.
 
 Focus: `set_focus()` only for pinned/shortcut opens and when the Notes
 tab needs typing; hover/pill opens do not steal focus.

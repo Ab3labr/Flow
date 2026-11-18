@@ -3,11 +3,16 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager};
 
 mod triggers;
+mod window_mode;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
-    .invoke_handler(tauri::generate_handler![settings_get, settings_set])
+    .invoke_handler(tauri::generate_handler![
+      settings_get,
+      settings_set,
+      window_mode::set_ui_mode
+    ])
     .setup(|app| {
       #[cfg(target_os = "windows")]
       {
@@ -32,7 +37,14 @@ pub fn run() {
         )?;
       }
 
-      let _window = app.get_webview_window("main").unwrap();
+      let window = app.get_webview_window("main").unwrap();
+
+      // Startup mode is idle: hidden and click-through.
+      if let Err(err) = window_mode::apply(&window, window_mode::UiMode::Idle, 0.0) {
+        log::warn!("failed to apply startup idle mode: {err}");
+        let _ = window.set_ignore_cursor_events(true);
+        let _ = window.hide();
+      }
 
       let handle = app.handle();
       let open_item = MenuItem::with_id(handle, "open-float", "Open Float", true, None::<&str>)?;

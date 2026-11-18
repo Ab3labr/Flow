@@ -18,7 +18,7 @@ not started / in progress / done / blocked
 - [x] `src-tauri/` scaffold (Cargo.toml, tauri.conf.json, build.rs,
       capabilities, icons, main.rs/lib.rs)
 - [x] Window: frameless/transparent/always-on-top/skip-taskbar, ~560x400
-- [ ] Window positioning: top-center of cursor monitor, ignore-cursor-events when closed
+- [x] Window positioning: top-center of cursor monitor, ignore-cursor-events when closed
 - [x] Single instance (Windows mutex)
 - [x] Tray icon: Open Float / Settings / Quit (`TrayIconBuilder`; emits `open-request`)
 - [x] `settings.json` persistence (`settings_get`/`settings_set` commands)
@@ -123,6 +123,23 @@ Tauri 2 shell scaffolded:
 - Build succeeds (debug bundle produces MSI and NSIS installers)
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
 
+## Last session (window model)
+Done: `set_ui_mode(mode, panel_height)` command — idle (hidden +
+click-through, 120x4 collapsed size), pill 200x90, open 560 x panel+40;
+centered at y=0 on the monitor under the cursor, DPI-correct (tests at
+100/125/150%). Startup mode is idle. Frontend reports mode on open/close/
+tab/notes-height changes and delays idle by 250 ms after close.
+`open-request` is consumed now (expands pinned, routes `{tab}`), and the real
+app renders only `Notch` on a transparent body (fake desktop stays in the
+browser prototype).
+Half-done / follow-ups:
+- Tray/shortcut opens do not set focus, only `pinned`; needs a source-aware
+  `open-request` payload.
+- The JS hover hot zone in `Notch` is inert while the window is hidden; the
+  Rust hot zone is the real opener.
+- Close delay is 250 ms while the designed close animation runs ~320 ms, so
+  the window can hide just before the final animation frames.
+
 ## Last session (tray icon)
 Done: `TrayIconBuilder` with "Open Float" / "Settings" / "Quit", icon from
 `app.default_window_icon()`. Open Float emits `open-request` (null payload),
@@ -149,3 +166,4 @@ Half-done / follow-ups:
 - Phase 1: Tauri shell scaffolded, single-instance mutex, settings persistence, builds successfully.
 - Phase 2: hot-zone cursor poll, dwell, suppression implemented with unit tests.
 - Tray: TrayIconBuilder menu (Open Float/Settings/Quit) emitting `open-request`.
+- Window model: `set_ui_mode` idle/pill/open, DPI-aware cursor-monitor placement, frontend open-request consumption.

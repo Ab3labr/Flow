@@ -16,8 +16,6 @@
         "label": "main",
         "width": 560,
         "height": 400,
-        "minWidth": 560,
-        "minHeight": 400,
         "x": 0,
         "y": 0,
         "decorations": false,
@@ -26,7 +24,8 @@
         "skipTaskbar": true,
         "resizable": false,
         "fullscreen": false,
-        "center": false
+        "center": false,
+        "visible": false
       }
     ],
     "security": {

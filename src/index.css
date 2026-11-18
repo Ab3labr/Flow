@@ -15,6 +15,12 @@
     user-select: none;
   }
 
+  /* Real app window is transparent; only the notch is painted. */
+  :root.tauri,
+  :root.tauri body {
+    background: transparent;
+  }
+
   button,
   input {
     outline: none;

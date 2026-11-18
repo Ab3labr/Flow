@@ -1,6 +1,7 @@
 import { BatteryMedium, ChevronUp, Search, Volume2, Wifi } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Notch } from "./components/Notch";
+import { isTauriApp } from "./services/env";
 
 function WindowsMark() {
   return (
@@ -51,7 +52,8 @@ function Taskbar() {
   );
 }
 
-export default function App() {
+/** Browser prototype: fake desktop stage behind the notch. */
+function DesktopStage() {
   const [scale, setScale] = useState(() =>
     Math.min(window.innerWidth / 1920, window.innerHeight / 1080),
   );
@@ -82,4 +84,9 @@ export default function App() {
       </div>
     </main>
   );
+}
+
+export default function App() {
+  if (isTauriApp) return <Notch />;
+  return <DesktopStage />;
 }
