@@ -38,6 +38,8 @@ not started / in progress / done / blocked
       DECISIONS.md); testable only after the hook is verified without it
 - [x] Pure functions + `cargo test` (dwell, alt-tap)
 - [x] Frontend consumes `open-request`/`toggle-request` events
+- [x] Settings live via `RwLock` shared state (`settings_set` applies with no
+      restart), suppression-reason logging ≤1/s, `settingsVersion` migration
 
 ### Phase 3 — Music (SMTC)
 - [ ] Now playing snapshot + events (session/props/playback/timeline)
@@ -127,6 +129,42 @@ Tauri 2 shell scaffolded:
 - Settings file creation/load/save implemented (atomic temp+rename), stores NotchSettings, notesFolder, calendarAccounts, timerCustomTimes
 - Commands: settings_get, settings_set
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
+
+## Last session (live settings & unmistakable toggles)
+Done: `settingsVersion` (current 2) on `AppSettings` (`#[serde(default)]` → 0
+when missing). `settings::init` runs once in setup after the file exists:
+`load_or_default` (missing/corrupt → all defaults), then
+`apply_version_migration` resets `topEdge`, `altAlt`, `hideInFullscreen` and
+`launchAtStartup` to true when the version is missing/older, saves the file
+and sets the version. `settings_set` forces the version to 2 so a frontend
+payload cannot re-trigger the migration.
+Live state: `static LIVE: LazyLock<RwLock<NotchSettings>>` seeded by `init`;
+`top_edge()`, `alt_alt()` and `hide_in_fullscreen()` read it on every trigger
+cycle/event, and `settings_set` replaces it after a successful save. The
+hot-zone thread no longer exits when `topEdge` is off, and the Alt hook is
+always installed and checks `altAlt` per event — both toggles now apply with no
+restart. `settings_get` refreshes the live state too.
+Logging: one Info line with the four values at startup (`settings: topEdge=…
+altAlt=… hideInFullscreen=… launchAtStartup=…`) and on every successful
+`settings_set`. Hover suppression logs an Info reason while the cursor is in
+the zone — `top edge disabled in settings`, `mouse button held` or `fullscreen
+app detected` — immediately on a change and otherwise at most once per second.
+`Toggle`: one `value` drives track, knob position/colour and the row label.
+ON = `#FFFFFF` track, `#000000` knob right, label `text-white`; OFF = `#2a2a2a`
+track with a 1 px `#444444` inset outline, `#8a8a8a` knob left, label
+`text-white/50`; OFF hovers to `#343434`. Size (36x20, knob 14) and the 500/32
+spring are unchanged; `role="switch"`, `aria-checked`, Space/Enter via the
+native button, and a `focus-visible` ring. `Notch.tsx` saves through
+`updateSettings`: optimistic `setSettings`, then `settingsService.save`, and on
+failure reverts to the previous object and logs (a sequence counter ignores
+stale failures). The old `[settings]` auto-save effect is gone.
+Half-done / follow-ups:
+- Optimistic save has no visible error toast; failures only appear in the
+  console (the toggle snaps back).
+- `settingsVersion` is not typed on the TypeScript `AppSettings`; it is
+  preserved by the spread in `tauriServices` and forced by Rust anyway.
+- Fullscreen heuristic and Alt-menu suppression are unchanged from the
+  previous sessions.
 
 ## Last session (settings toggles & defaults)
 Done: one shared `Toggle` in `SettingsView` drives the track, the knob and
@@ -279,3 +317,4 @@ Half-done / follow-ups:
 - Triggers: Rust WH_KEYBOARD_LL double-Alt hook (`toggle-request`), JS sequence Tauri-gated, pure tracker unit-tested.
 - Triggers: physical-px `in_hot_zone` + new `DwellTracker`, closed-only `open-request {source:"hover"}`, unpinned hover open.
 - Settings: single-value `Toggle` (white/black on, #303030/#9a9a9a off), four toggles default true, serde defaults for partial settings.json.
+- Settings: `settingsVersion` 2 migration, live `RwLock` state for both triggers, suppression-reason logs, redesigned toggle (white/#000 on, #2a2a2a/#8a8a8a off, dimmed label, focus ring), optimistic save + revert.

@@ -114,8 +114,8 @@ export function Notch() {
   const remindedEvent = useRef<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const expandedRef = useRef(false);
-  const settingsHydrated = useRef(false);
-  const skipNextSettingsSave = useRef(true);
+  const settingsRef = useRef<NotchSettings>(DEFAULT_NOTCH_SETTINGS);
+  const settingsSaveSequence = useRef(0);
   const tracks = mediaService.getTracks();
   const track = tracks[trackIndex];
   const visibleAccounts = settings.noCalendars ? [] : accounts;
@@ -138,29 +138,30 @@ export function Notch() {
       .load()
       .then((loaded) => {
         if (cancelled) return;
+        settingsRef.current = loaded;
         setSettings(loaded);
-        settingsHydrated.current = true;
       })
       .catch((error) => {
         console.error("failed to load settings", error);
-        settingsHydrated.current = true;
-        skipNextSettingsSave.current = false;
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  useEffect(() => {
-    if (!settingsHydrated.current) return;
-    if (skipNextSettingsSave.current) {
-      skipNextSettingsSave.current = false;
-      return;
-    }
-    void settingsService.save(settings).catch((error) => {
+  // Paint the new value immediately, then persist; revert if the write fails.
+  const updateSettings = useCallback((next: NotchSettings) => {
+    const previous = settingsRef.current;
+    settingsRef.current = next;
+    setSettings(next);
+    const sequence = ++settingsSaveSequence.current;
+    void settingsService.save(next).catch((error) => {
       console.error("failed to save settings", error);
+      if (settingsSaveSequence.current !== sequence) return;
+      settingsRef.current = previous;
+      setSettings(previous);
     });
-  }, [settings]);
+  }, []);
 
   // Report the window model to Rust. Open/pill resizes apply before Motion
   // expands; idle is only sent after the close animation has finished.
@@ -402,7 +403,7 @@ export function Notch() {
       );
       return settings.noCalendars ? [account] : [...current, account];
     });
-    setSettings((current) => ({ ...current, noCalendars: false }));
+    updateSettings({ ...settingsRef.current, noCalendars: false });
   };
 
   const toggleCalendar = (id: string) => {
@@ -506,7 +507,7 @@ export function Notch() {
       <SettingsView
         settings={settings}
         accounts={visibleAccounts}
-        onChange={setSettings}
+        onChange={updateSettings}
         onConnect={connectCalendar}
         onToggleAccount={toggleCalendar}
         onDisconnect={(id) =>

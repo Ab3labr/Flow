@@ -220,24 +220,20 @@ mod imp {
   }
 
   pub fn start(app: tauri::AppHandle) {
-    let (top_edge, hide_in_fullscreen) = match crate::settings::load_settings(&app) {
-      Ok(settings) => (settings.notch.top_edge, settings.notch.hide_in_fullscreen),
-      Err(_) => (true, true),
-    };
-    if !top_edge {
-      log::info!("hot zone disabled by settings");
-      return;
-    }
-
     let spawned = std::thread::Builder::new()
       .name("float-hot-zone".into())
       .spawn(move || {
         let mut tracker = DwellTracker::new(DWELL_MS);
         let mut last_report: Option<Instant> = None;
+        let mut last_reason: Option<(&'static str, Instant)> = None;
         loop {
           let now = Instant::now();
+          // Read the live settings every cycle so toggling needs no restart.
+          let enabled = crate::settings::top_edge();
+          let hide_in_fullscreen = crate::settings::hide_in_fullscreen();
+
           let hit = cursor_monitor();
-          let inside = hit
+          let geometry_inside = hit
             .map(|(point, rect, scale)| {
               in_hot_zone(
                 point.x,
@@ -249,11 +245,33 @@ mod imp {
               )
             })
             .unwrap_or(false);
-          let blocked = suppressed(
-            mouse_button_down(),
-            hide_in_fullscreen && foreground_fullscreen(),
-            hide_in_fullscreen,
-          );
+          let inside = enabled && geometry_inside;
+          let mouse_down = inside && mouse_button_down();
+          let fullscreen = inside && hide_in_fullscreen && foreground_fullscreen();
+          let blocked = suppressed(mouse_down, fullscreen, hide_in_fullscreen);
+
+          // Suppression reasons, at most one line per second (and immediately
+          // when the reason changes). Only while the cursor is in the zone.
+          let reason = if geometry_inside && !enabled {
+            Some("top edge disabled in settings")
+          } else if mouse_down {
+            Some("mouse button held")
+          } else if fullscreen {
+            Some("fullscreen app detected")
+          } else {
+            None
+          };
+          if let Some(reason) = reason {
+            let due = last_reason.map_or(true, |(previous, at)| {
+              previous != reason || now.duration_since(at) >= REPORT_INTERVAL
+            });
+            if due {
+              log::info!("hover suppressed: {reason}");
+              last_reason = Some((reason, now));
+            }
+          } else {
+            last_reason = None;
+          }
 
           // `update` always runs so the state advances even while the panel is
           // open; the event only goes out when the panel is closed.
@@ -369,9 +387,16 @@ mod alt_hook {
                 .then(|| state.app.clone())
             });
             if let Some(app) = fire {
-              log::info!("double alt detected, emitting toggle-request");
-              if let Err(err) = app.emit("toggle-request", serde_json::json!({ "source": "alt" })) {
-                log::warn!("failed to emit toggle-request: {err}");
+              // Live setting: no restart needed when the toggle changes.
+              if !crate::settings::alt_alt() {
+                log::debug!("double alt ignored (altAlt off)");
+              } else {
+                log::info!("double alt detected, emitting toggle-request");
+                if let Err(err) =
+                  app.emit("toggle-request", serde_json::json!({ "source": "alt" }))
+                {
+                  log::warn!("failed to emit toggle-request: {err}");
+                }
               }
             }
           }
@@ -383,20 +408,9 @@ mod alt_hook {
   }
 
   /// Installs the low-level keyboard hook on its own thread. The thread must
-  /// run a message loop or the hook is never called.
+  /// run a message loop or the hook is never called. `altAlt` is checked live
+  /// on every event, so the hook is always installed.
   pub fn start(app: tauri::AppHandle) {
-    let enabled = match crate::settings::load_settings(&app) {
-      Ok(settings) => settings.notch.alt_alt,
-      Err(err) => {
-        log::warn!("failed to read altAlt setting ({err}), keeping Alt Alt enabled");
-        true
-      }
-    };
-    if !enabled {
-      log::info!("alt alt disabled by settings");
-      return;
-    }
-
     let spawned = std::thread::Builder::new()
       .name("float-alt-hook".into())
       .spawn(move || {

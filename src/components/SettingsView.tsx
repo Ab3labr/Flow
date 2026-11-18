@@ -10,14 +10,22 @@ export type { NotchSettings };
 function Toggle({ value, onChange }: { value: boolean; onChange: () => void }) {
   return (
     <motion.button
+      type="button"
       whileTap={{ scale: 0.94 }}
       onClick={onChange}
       role="switch"
       aria-checked={value}
-      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${value ? "bg-white" : "bg-[#303030]"}`}
+      className={`relative h-5 w-9 shrink-0 rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#121212] ${
+        value
+          ? "bg-white"
+          : "bg-[#2a2a2a] shadow-[inset_0_0_0_1px_#444444] hover:bg-[#343434]"
+      }`}
     >
       <motion.span
-        className={`absolute top-[3px] h-3.5 w-3.5 rounded-full ${value ? "bg-black" : "bg-[#9a9a9a]"}`}
+        aria-hidden="true"
+        className={`absolute top-[3px] h-3.5 w-3.5 rounded-full transition-colors ${
+          value ? "bg-black" : "bg-[#8a8a8a]"
+        }`}
         animate={{ x: value ? 19 : 3 }}
         transition={{ type: "spring", stiffness: 500, damping: 32 }}
       />
@@ -64,7 +72,13 @@ export function SettingsView({
               key={key}
               className="flex h-8 items-center justify-between border-b border-white/[0.06] px-2.5 last:border-0"
             >
-              <span className="text-[11px] text-white/80">{label}</span>
+              <span
+                className={`text-[11px] transition-colors ${
+                  settings[key] ? "text-white" : "text-white/50"
+                }`}
+              >
+                {label}
+              </span>
               <div className="flex items-center gap-2">
                 {key === "altAlt" && (
                   <input
