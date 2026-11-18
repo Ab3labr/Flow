@@ -20,7 +20,7 @@ not started / in progress / done / blocked
 - [x] Window: frameless/transparent/always-on-top/skip-taskbar, ~560x400
 - [ ] Window positioning: top-center of cursor monitor, ignore-cursor-events when closed
 - [x] Single instance (Windows mutex)
-- [ ] Tray icon: Open Float / Settings / Quit (deferred to Phase 8 due to API complexity)
+- [x] Tray icon: Open Float / Settings / Quit (`TrayIconBuilder`; emits `open-request`)
 - [x] `settings.json` persistence (`settings_get`/`settings_set` commands)
 - [ ] SettingsView wired to real settingsService
 - [x] `cargo check` + `pnpm tauri build` smoke test
@@ -123,6 +123,14 @@ Tauri 2 shell scaffolded:
 - Build succeeds (debug bundle produces MSI and NSIS installers)
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
 
+## Last session (tray icon)
+Done: `TrayIconBuilder` with "Open Float" / "Settings" / "Quit", icon from
+`app.default_window_icon()`. Open Float emits `open-request` (null payload),
+Settings emits `open-request {tab:"settings"}`, Quit calls `app.exit(0)`.
+Half-done / follow-ups:
+- Nothing consumes `open-request` yet, so the panel pin/focus and the
+  Settings tab switch still need the frontend listener (Phase 2 item 4).
+
 ## Last session (Phase 2 hot zone)
 Done: cursor poll thread (~60 Hz), 240x4 logical-px zone centered on the
 cursor's monitor and scaled by that monitor's DPI, 180 ms dwell, mouse-button
@@ -140,3 +148,4 @@ Half-done / follow-ups:
 - Phase 0: docs written, git init, commit. Owner decisions resolved. Tauri deps installed.
 - Phase 1: Tauri shell scaffolded, single-instance mutex, settings persistence, builds successfully.
 - Phase 2: hot-zone cursor poll, dwell, suppression implemented with unit tests.
+- Tray: TrayIconBuilder menu (Open Float/Settings/Quit) emitting `open-request`.

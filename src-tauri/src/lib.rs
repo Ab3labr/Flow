@@ -1,4 +1,6 @@
-use tauri::Manager;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{Emitter, Manager};
 
 mod triggers;
 
@@ -31,6 +33,34 @@ pub fn run() {
       }
 
       let _window = app.get_webview_window("main").unwrap();
+
+      let handle = app.handle();
+      let open_item = MenuItem::with_id(handle, "open-float", "Open Float", true, None::<&str>)?;
+      let settings_item = MenuItem::with_id(handle, "settings", "Settings", true, None::<&str>)?;
+      let quit_item = MenuItem::with_id(handle, "quit", "Quit", true, None::<&str>)?;
+      let menu = Menu::with_items(handle, &[&open_item, &settings_item, &quit_item])?;
+
+      let mut tray = TrayIconBuilder::with_id("main")
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+          "open-float" => {
+            if let Err(err) = app.emit("open-request", ()) {
+              log::warn!("failed to emit open-request: {err}");
+            }
+          }
+          "settings" => {
+            if let Err(err) = app.emit("open-request", serde_json::json!({ "tab": "settings" })) {
+              log::warn!("failed to emit open-request: {err}");
+            }
+          }
+          "quit" => app.exit(0),
+          _ => {}
+        });
+      if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+      }
+      tray.build(app)?;
 
       #[cfg(target_os = "windows")]
       {

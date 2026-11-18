@@ -22,3 +22,5 @@ Phase 1
 - @tauri-apps/cli ^2.12.5: Tauri 2 CLI for dev/build
 - windows ^0.62 (Win32_Foundation, Win32_System_Threading): single-instance enforcement via mutex (spec requirement)
 - tauri-plugin-autostart: launch at startup (Phase 8)
+- tauri `tray-icon` feature (pulls the tray-icon crate): system tray icon and
+  menu, per owner decision (Open Float / Settings / Quit)
