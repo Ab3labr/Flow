@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { isMockMode } from "../services/env";
-import type { Track } from "../services/mockServices";
+import type { Track } from "../services";
 import { Equalizer } from "./CollapsedPill";
 import { PressButton } from "./TopBar";
 

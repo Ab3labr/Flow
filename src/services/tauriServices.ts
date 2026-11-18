@@ -1,25 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { isMockMode } from "./env";
-
-export type NotchSettings = {
-  topEdge: boolean;
-  altAlt: boolean;
-  fullscreen: boolean;
-  launch: boolean;
-  upcomingEvent: boolean;
-  noCalendars: boolean;
-  shortcut: string;
-};
-
-export const DEFAULT_NOTCH_SETTINGS: NotchSettings = {
-  topEdge: true,
-  altAlt: true,
-  fullscreen: true,
-  launch: true,
-  upcomingEvent: true,
-  noCalendars: false,
-  shortcut: "Alt Alt",
-};
+import type { NotchSettings } from "./types";
 
 type BackendNotchSettings = {
   topEdge: boolean;
@@ -53,8 +33,6 @@ const DEFAULT_BACKEND_SETTINGS: BackendSettings = {
   timerCustomTimes: [],
 };
 
-const MOCK_STORAGE_KEY = "float-mock-settings";
-
 function fromBackend(settings: BackendNotchSettings): NotchSettings {
   return {
     topEdge: settings.topEdge,
@@ -79,27 +57,10 @@ function toBackend(settings: NotchSettings): BackendNotchSettings {
   };
 }
 
-function readMockBackend(): BackendSettings {
-  try {
-    const stored = JSON.parse(localStorage.getItem(MOCK_STORAGE_KEY) ?? "null");
-    if (stored?.notch) {
-      return {
-        ...DEFAULT_BACKEND_SETTINGS,
-        ...stored,
-        notch: { ...DEFAULT_BACKEND_SETTINGS.notch, ...stored.notch },
-      };
-    }
-  } catch {
-    // Corrupt mock value: fall back to defaults.
-  }
-  return { ...DEFAULT_BACKEND_SETTINGS, notch: { ...DEFAULT_BACKEND_SETTINGS.notch } };
-}
-
 /** Last value read from disk, so unrelated fields survive a notch-only save. */
 let lastLoaded: BackendSettings | null = null;
 
 async function loadRaw(): Promise<BackendSettings> {
-  if (isMockMode) return readMockBackend();
   const settings = await invoke<BackendSettings>("settings_get");
   lastLoaded = settings;
   return settings;
@@ -112,11 +73,6 @@ async function load(): Promise<NotchSettings> {
 async function save(settings: NotchSettings): Promise<void> {
   const base = lastLoaded ?? (await loadRaw());
   const next: BackendSettings = { ...base, notch: toBackend(settings) };
-  if (isMockMode) {
-    localStorage.setItem(MOCK_STORAGE_KEY, JSON.stringify(next));
-    lastLoaded = next;
-    return;
-  }
   await invoke("settings_set", { settings: next });
   lastLoaded = next;
 }

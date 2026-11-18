@@ -5,7 +5,7 @@ import {
   CalendarEvent,
   CalendarProvider,
   calendarService,
-} from "../services/mockServices";
+} from "../services";
 import { CalendarConnectSheet } from "./CalendarConnect";
 import { JoinButton } from "./EventCard";
 import { PressButton } from "./TopBar";

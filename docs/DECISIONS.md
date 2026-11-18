@@ -17,6 +17,10 @@ UI/UX
 
 ## Dependency justifications
 
+Frontend
+- @fontsource-variable/inter: bundle Inter locally (no remote font import,
+  CSP-safe, works offline)
+
 Phase 1
 - @tauri-apps/api ^2.12.5: Tauri 2 frontend bindings
 - @tauri-apps/cli ^2.12.5: Tauri 2 CLI for dev/build

@@ -23,6 +23,7 @@ not started / in progress / done / blocked
 - [ ] Tray icon: Open Float / Settings / Quit (`TrayIconBuilder`; emits `open-request`)
 - [ ] `settings.json` persistence (`settings_get`/`settings_set` commands)
 - [x] SettingsView wired to real settingsService
+- [x] Inter bundled locally (@fontsource-variable/inter), no remote font import
 - [x] `cargo check` + `pnpm tauri build` smoke test
 
 ### Phase 2 — Triggers
@@ -123,6 +124,19 @@ Tauri 2 shell scaffolded:
 - Commands: settings_get, settings_set
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
 
+## Last session (font + service split)
+Done: Tauri renders only `Notch` on a fully transparent page (no wallpaper,
+taskbar or 1920x1080 stage scaling); a plain browser keeps the fake desktop.
+Inter is bundled via `@fontsource-variable/inter`, the Google Fonts import is
+gone, and the Tauri CSP is `font-src 'self'`. Services split into `types.ts`,
+`mockServices.ts`, `tauriServices.ts` (settings only) and `index.ts`;
+`VITE_USE_MOCK=1` forces mock and a plain browser defaults to mock.
+Half-done / follow-ups:
+- Media/calendar/timer/notes still have mock implementations only; real ones
+  land with their phases.
+- `tauriServices.ts` is statically imported (so bundled) in mock mode too;
+  only its calls are gated by `VITE_USE_MOCK`.
+
 ## Last session (settings persistence)
 Done: `settingsService` backed by `settings_get`/`settings_set` (mock via
 `VITE_USE_MOCK=1` or plain browser dev, persisted to localStorage). Notch
@@ -179,3 +193,4 @@ Half-done / follow-ups:
 - Tray: TrayIconBuilder menu (Open Float/Settings/Quit) emitting `open-request`.
 - Window model: `set_ui_mode` idle/pill/open, DPI-aware cursor-monitor placement, frontend open-request consumption.
 - Settings: real settingsService (settings_get/settings_set), persisted toggles, mock-only demo/lyrics/output controls.
+- Fonts/services: Inter bundled locally, Tauri-only notch render, services split into types/mock/tauri/index.

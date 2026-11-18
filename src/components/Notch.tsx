@@ -5,14 +5,12 @@ import {
   CalendarAccount,
   CalendarEvent,
   CalendarProvider,
+  DEFAULT_NOTCH_SETTINGS,
   calendarService,
   mediaService,
-} from "../services/mockServices";
-import {
-  DEFAULT_NOTCH_SETTINGS,
   settingsService,
   type NotchSettings,
-} from "../services/settingsService";
+} from "../services";
 import { onOpenRequest, setUiMode, type UiMode } from "../services/uiService";
 import { CalendarView } from "./CalendarView";
 import { CaptureView } from "./CaptureView";

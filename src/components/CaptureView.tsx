@@ -1,6 +1,6 @@
 import { Scissors, Square, Video } from "lucide-react";
 import { motion } from "motion/react";
-import { captureService } from "../services/mockServices";
+import { captureService } from "../services";
 import { PressButton } from "./TopBar";
 
 export function CaptureView({

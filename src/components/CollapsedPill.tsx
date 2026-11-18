@@ -1,5 +1,5 @@
 import { motion } from "motion/react";
-import type { Track } from "../services/mockServices";
+import type { Track } from "../services";
 
 function Equalizer({ playing }: { playing: boolean }) {
   return (

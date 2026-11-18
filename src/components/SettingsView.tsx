@@ -1,9 +1,8 @@
 import { Plus } from "lucide-react";
 import { motion } from "motion/react";
 import { useState } from "react";
+import { CalendarAccount, CalendarProvider, type NotchSettings } from "../services";
 import { isMockMode } from "../services/env";
-import { CalendarAccount, CalendarProvider } from "../services/mockServices";
-import type { NotchSettings } from "../services/settingsService";
 import { CalendarAccountRow, CalendarConnectSheet } from "./CalendarConnect";
 
 export type { NotchSettings };

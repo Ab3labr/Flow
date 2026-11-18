@@ -1,7 +1,7 @@
 import { Check, Eye, EyeOff, RefreshCw, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useState } from "react";
-import { CalendarAccount, CalendarProvider, calendarService } from "../services/mockServices";
+import { CalendarAccount, CalendarProvider, calendarService } from "../services";
 import { PressButton } from "./TopBar";
 
 export function CalendarAccountRow({

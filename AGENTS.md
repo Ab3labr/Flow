@@ -50,8 +50,8 @@ cd src-tauri && cargo test
 - `src/components/` — Notch, TopBar, MusicCard, EventCard, TimerView,
   CalendarView, CalendarConnect, NotesView, CaptureView, SettingsView,
   CollapsedPill
-- `src/services/` — mockServices.ts today; types.ts/index.ts/
-  tauriServices.ts planned (see ARCHITECTURE.md)
+- `src/services/` — types.ts, index.ts, mockServices.ts, tauriServices.ts
+  (see ARCHITECTURE.md)
 - `src-tauri/` — Rust backend (created in Phase 1)
 - `.mise.toml` — node 22, pnpm 10.34.3
 - `vite.config.ts` — Vite + Tailwind v4 + Figma Make plugins; verify it

@@ -51,21 +51,21 @@ functions returning mock data.
 - Events: `rawEvents` + `mockEventStart = Date.now()` — times are relative
   to page load (5/80/150 min offsets).
 - Notes/custom times: localStorage.
-- Settings: `useState` in Notch (defaults topEdge/altAlt/fullscreen/launch/
-  upcomingEvent true, noCalendars false, shortcut "Alt Alt") — NOT
-  persisted.
+- Settings: mock values persisted to localStorage; real values via
+  `settingsService` (`settings_get`/`settings_set`).
 
-## Planned service layer (target)
+## Service layer
 ```
 src/services/
-  types.ts          shared DTOs (Track→NowPlaying, CalendarEvent w/ endsAt,
-                    CalendarAccount, Note, NotchSettings, RecordingState…)
-  index.ts          export mock or tauri impl by VITE_USE_MOCK
-  mockServices.ts   current file, conformed to types.ts
-  tauriServices.ts  invoke()/listen() wrappers — NEVER imported when mocking
+  types.ts          shared DTOs (Track, CalendarEvent, CalendarAccount,
+                    Note, NotchSettings)
+  index.ts          exports mock or tauri impl by VITE_USE_MOCK
+  mockServices.ts   mock data + localStorage impl
+  tauriServices.ts  invoke()/listen() wrappers — settingsService only today
 ```
-New `settingsService` (get/set NotchSettings + notesFolder + calendar
-account metadata via `settings_get`/`settings_set` commands).
+`settingsService` is real (NotchSettings + notesFolder + calendar account
+metadata via `settings_get`/`settings_set`; unrelated fields preserved).
+`VITE_USE_MOCK=1` forces mock; a plain browser defaults to mock.
 
 ## Planned Tauri architecture
 

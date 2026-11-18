@@ -1,6 +1,6 @@
 import { Plus } from "lucide-react";
 import { motion } from "motion/react";
-import { CalendarEvent, calendarService } from "../services/mockServices";
+import { CalendarEvent, calendarService } from "../services";
 import { PressButton } from "./TopBar";
 
 export function JoinButton({

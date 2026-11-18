@@ -1,43 +1,12 @@
-export type Track = {
-  id: string;
-  title: string;
-  artist: string;
-  source: "Spotify" | "YouTube" | "Apple Music";
-  duration: number;
-  colors: [string, string, string];
-};
-
-export type CalendarEvent = {
-  id: string;
-  accountId: string;
-  title: string;
-  detail: string;
-  time: string;
-  color: string;
-  startsAt: number;
-  location?: string;
-  description?: string;
-  live?: boolean;
-};
-
-export type CalendarProvider = "google" | "outlook" | "icloud" | "ics";
-
-export type CalendarAccount = {
-  id: string;
-  provider: CalendarProvider;
-  name: string;
-  email: string;
-  color: string;
-  visible: boolean;
-  status: "synced" | "error";
-};
-
-export type Note = {
-  id: string;
-  title: string;
-  body: string;
-  updatedAt: number;
-};
+import {
+  DEFAULT_NOTCH_SETTINGS,
+  type CalendarAccount,
+  type CalendarEvent,
+  type CalendarProvider,
+  type Note,
+  type NotchSettings,
+  type Track,
+} from "./types";
 
 const tracks: Track[] = [
   {
@@ -241,5 +210,24 @@ export const noteService = {
   },
   remove: (id: string) => {
     writeNotes(readNotes().filter((note) => note.id !== id));
+  },
+};
+
+const MOCK_SETTINGS_KEY = "float-mock-notch-settings";
+
+function readMockSettings(): NotchSettings {
+  try {
+    const stored = JSON.parse(localStorage.getItem(MOCK_SETTINGS_KEY) ?? "null");
+    if (stored) return { ...DEFAULT_NOTCH_SETTINGS, ...stored };
+  } catch {
+    // Corrupt mock value: fall back to defaults.
+  }
+  return { ...DEFAULT_NOTCH_SETTINGS };
+}
+
+export const settingsService = {
+  load: async (): Promise<NotchSettings> => readMockSettings(),
+  save: async (settings: NotchSettings): Promise<void> => {
+    localStorage.setItem(MOCK_SETTINGS_KEY, JSON.stringify(settings));
   },
 };

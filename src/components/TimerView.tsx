@@ -1,7 +1,7 @@
 import { Minus, Plus } from "lucide-react";
 import { motion } from "motion/react";
 import { PointerEvent, useEffect, useRef, useState } from "react";
-import { timerService } from "../services/mockServices";
+import { timerService } from "../services";
 import { PressButton } from "./TopBar";
 
 function HoldButton({

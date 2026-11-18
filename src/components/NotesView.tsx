@@ -1,7 +1,7 @@
 import { Check, List, Plus, Trash2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
-import { Note, noteService } from "../services/mockServices";
+import { Note, noteService } from "../services";
 import { PressButton } from "./TopBar";
 
 function timeAgo(timestamp: number) {
