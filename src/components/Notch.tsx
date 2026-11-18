@@ -8,13 +8,18 @@ import {
   calendarService,
   mediaService,
 } from "../services/mockServices";
+import {
+  DEFAULT_NOTCH_SETTINGS,
+  settingsService,
+  type NotchSettings,
+} from "../services/settingsService";
 import { onOpenRequest, setUiMode, type UiMode } from "../services/uiService";
 import { CalendarView } from "./CalendarView";
 import { CaptureView } from "./CaptureView";
 import { EventCard, JoinButton } from "./EventCard";
 import { MusicCard } from "./MusicCard";
 import { NotesView } from "./NotesView";
-import { NotchSettings, SettingsView } from "./SettingsView";
+import { SettingsView } from "./SettingsView";
 import { TimerView } from "./TimerView";
 import { PressButton, TabId, TopBar } from "./TopBar";
 
@@ -95,15 +100,7 @@ export function Notch() {
   const [newNoteRequest, setNewNoteRequest] = useState(0);
   const [accounts, setAccounts] = useState<CalendarAccount[]>(calendarService.getDefaultAccounts);
   const [reminderEvent, setReminderEvent] = useState<CalendarEvent | null>(null);
-  const [settings, setSettings] = useState<NotchSettings>({
-    topEdge: true,
-    altAlt: true,
-    fullscreen: true,
-    launch: true,
-    upcomingEvent: true,
-    noCalendars: false,
-    shortcut: "Alt Alt",
-  });
+  const [settings, setSettings] = useState<NotchSettings>(DEFAULT_NOTCH_SETTINGS);
   const hoverTimer = useRef<number | undefined>(undefined);
   const leaveTimer = useRef<number | undefined>(undefined);
   const completionTimer = useRef<number | undefined>(undefined);
@@ -111,6 +108,8 @@ export function Notch() {
   const remindedEvent = useRef<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const expandedRef = useRef(false);
+  const settingsHydrated = useRef(false);
+  const skipNextSettingsSave = useRef(true);
   const tracks = mediaService.getTracks();
   const track = tracks[trackIndex];
   const visibleAccounts = settings.noCalendars ? [] : accounts;
@@ -126,6 +125,36 @@ export function Notch() {
   useEffect(() => {
     expandedRef.current = expanded;
   }, [expanded]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void settingsService
+      .load()
+      .then((loaded) => {
+        if (cancelled) return;
+        setSettings(loaded);
+        settingsHydrated.current = true;
+      })
+      .catch((error) => {
+        console.error("failed to load settings", error);
+        settingsHydrated.current = true;
+        skipNextSettingsSave.current = false;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!settingsHydrated.current) return;
+    if (skipNextSettingsSave.current) {
+      skipNextSettingsSave.current = false;
+      return;
+    }
+    void settingsService.save(settings).catch((error) => {
+      console.error("failed to save settings", error);
+    });
+  }, [settings]);
 
   // Report the window model to Rust. Open/pill resizes apply before Motion
   // expands; idle is only sent after the close animation has finished.

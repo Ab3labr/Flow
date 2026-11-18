@@ -22,7 +22,7 @@ not started / in progress / done / blocked
 - [x] Single instance (Windows mutex)
 - [x] Tray icon: Open Float / Settings / Quit (`TrayIconBuilder`; emits `open-request`)
 - [x] `settings.json` persistence (`settings_get`/`settings_set` commands)
-- [ ] SettingsView wired to real settingsService
+- [x] SettingsView wired to real settingsService
 - [x] `cargo check` + `pnpm tauri build` smoke test
 
 ### Phase 2 — Triggers
@@ -123,6 +123,17 @@ Tauri 2 shell scaffolded:
 - Build succeeds (debug bundle produces MSI and NSIS installers)
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
 
+## Last session (settings persistence)
+Done: `settingsService` backed by `settings_get`/`settings_set` (mock via
+`VITE_USE_MOCK=1` or plain browser dev, persisted to localStorage). Notch
+loads settings on mount and saves after every change; toggles and the
+shortcut survive a restart. `notesFolder`, `calendarAccounts` and
+`timerCustomTimes` are preserved on save. Demo toggles, the lyrics button and
+the "Output device" row render only in mock mode.
+Half-done / follow-ups:
+- "Launch at startup" is persisted but the autostart plugin is still Phase 8.
+- Calendar accounts/notes folder in the UI are not yet driven by settings.
+
 ## Last session (window model)
 Done: `set_ui_mode(mode, panel_height)` command — idle (hidden +
 click-through, 120x4 collapsed size), pill 200x90, open 560 x panel+40;
@@ -167,3 +178,4 @@ Half-done / follow-ups:
 - Phase 2: hot-zone cursor poll, dwell, suppression implemented with unit tests.
 - Tray: TrayIconBuilder menu (Open Float/Settings/Quit) emitting `open-request`.
 - Window model: `set_ui_mode` idle/pill/open, DPI-aware cursor-monitor placement, frontend open-request consumption.
+- Settings: real settingsService (settings_get/settings_set), persisted toggles, mock-only demo/lyrics/output controls.

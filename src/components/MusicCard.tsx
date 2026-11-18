@@ -10,6 +10,7 @@ import {
   Speaker,
 } from "lucide-react";
 import { useState } from "react";
+import { isMockMode } from "../services/env";
 import type { Track } from "../services/mockServices";
 import { Equalizer } from "./CollapsedPill";
 import { PressButton } from "./TopBar";
@@ -124,13 +125,15 @@ export function MusicCard({
       </div>
 
       <div className="flex h-[22px] items-center justify-between text-white/75">
-        <PressButton
-          className="grid h-[22px] w-[22px] place-items-center rounded-full hover:bg-white/[0.06]"
-          aria-label="Lyrics"
-        >
-          <Captions className="h-4 w-4" strokeWidth={1.7} />
-        </PressButton>
-        <div className="flex items-center gap-1">
+        {isMockMode && (
+          <PressButton
+            className="grid h-[22px] w-[22px] place-items-center rounded-full hover:bg-white/[0.06]"
+            aria-label="Lyrics"
+          >
+            <Captions className="h-4 w-4" strokeWidth={1.7} />
+          </PressButton>
+        )}
+        <div className="ml-auto flex items-center gap-1">
           <PressButton
             className="grid h-[22px] w-[22px] place-items-center rounded-full hover:bg-white/[0.06]"
             aria-label="Previous track"
@@ -213,9 +216,11 @@ export function MusicCard({
                     onChange={(event) => onVolumeChange(Number(event.target.value))}
                   />
                 </div>
-                <button className="w-full rounded-md py-1 text-left text-[11px] text-white/70 hover:text-white">
-                  Output device
-                </button>
+                {isMockMode && (
+                  <button className="w-full rounded-md py-1 text-left text-[11px] text-white/70 hover:text-white">
+                    Output device
+                  </button>
+                )}
               </motion.div>
             )}
           </AnimatePresence>

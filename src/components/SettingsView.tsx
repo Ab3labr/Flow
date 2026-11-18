@@ -1,8 +1,12 @@
 import { Plus } from "lucide-react";
 import { motion } from "motion/react";
 import { useState } from "react";
+import { isMockMode } from "../services/env";
 import { CalendarAccount, CalendarProvider } from "../services/mockServices";
+import type { NotchSettings } from "../services/settingsService";
 import { CalendarAccountRow, CalendarConnectSheet } from "./CalendarConnect";
+
+export type { NotchSettings };
 
 function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void }) {
   return (
@@ -22,16 +26,6 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void 
   );
 }
 
-export type NotchSettings = {
-  topEdge: boolean;
-  altAlt: boolean;
-  fullscreen: boolean;
-  launch: boolean;
-  upcomingEvent: boolean;
-  noCalendars: boolean;
-  shortcut: string;
-};
-
 export function SettingsView({
   settings,
   accounts,
@@ -50,13 +44,13 @@ export function SettingsView({
   onReconnect: (id: string) => void;
 }) {
   const [connectOpen, setConnectOpen] = useState(false);
-  const rows: { key: keyof NotchSettings; label: string }[] = [
+  const rows: { key: keyof NotchSettings; label: string; demo?: boolean }[] = [
     { key: "topEdge", label: "Open at top edge" },
     { key: "altAlt", label: "Open with Alt Alt" },
     { key: "fullscreen", label: "Hide in fullscreen apps" },
     { key: "launch", label: "Launch at startup" },
-    { key: "upcomingEvent", label: "Demo: upcoming event" },
-    { key: "noCalendars", label: "Demo: no calendars connected" },
+    { key: "upcomingEvent", label: "Demo: upcoming event", demo: true },
+    { key: "noCalendars", label: "Demo: no calendars connected", demo: true },
   ];
 
   return (
@@ -66,7 +60,7 @@ export function SettingsView({
           Notch settings
         </p>
         <div className="overflow-hidden rounded-[14px] border border-[#1f1f1f] bg-[#121212]">
-          {rows.map(({ key, label }) => (
+          {rows.filter((row) => !row.demo || isMockMode).map(({ key, label }) => (
             <div
               key={key}
               className="flex h-8 items-center justify-between border-b border-white/[0.06] px-2.5 last:border-0"
