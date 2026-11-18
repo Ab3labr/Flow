@@ -6,12 +6,80 @@
 // The pure helpers are only exercised by tests on non-Windows builds.
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
 
+use std::time::{Duration, Instant};
+
 /// Zone width in logical px (design value, scaled to physical px).
 pub const ZONE_WIDTH_LOGICAL_PX: f64 = 240.0;
 /// Zone height in logical px (design value, scaled to physical px).
 pub const ZONE_HEIGHT_LOGICAL_PX: f64 = 4.0;
 /// Continuous dwell required before opening, in milliseconds.
 pub const DWELL_MS: u64 = 180;
+
+/// One keyboard event as seen by the double-Alt tracker.
+pub enum KeyEvent {
+  AltDown,
+  AltUp,
+  OtherDown,
+}
+
+pub struct AltTapTracker {
+  alt_down: bool,
+  clean: bool,
+  pressed_at: Option<Instant>,
+  last_tap_at: Option<Instant>,
+  window: Duration,
+}
+
+impl AltTapTracker {
+  pub fn new(window_ms: u64) -> Self {
+    Self {
+      alt_down: false,
+      clean: true,
+      pressed_at: None,
+      last_tap_at: None,
+      window: Duration::from_millis(window_ms),
+    }
+  }
+  /// Returns true when a double-tap completes.
+  pub fn on_event(&mut self, ev: KeyEvent, now: Instant) -> bool {
+    match ev {
+      KeyEvent::AltDown => {
+        if !self.alt_down {
+          self.alt_down = true;
+          self.clean = true;
+          self.pressed_at = Some(now);
+        }
+        false
+      }
+      KeyEvent::OtherDown => {
+        self.clean = false;
+        self.last_tap_at = None;
+        false
+      }
+      KeyEvent::AltUp => {
+        if !self.alt_down {
+          return false;
+        }
+        self.alt_down = false;
+        let pressed = self.pressed_at.take().unwrap_or(now);
+        if !self.clean {
+          self.last_tap_at = None;
+          return false;
+        }
+        match self.last_tap_at {
+          Some(prev) if pressed.duration_since(prev) <= self.window => {
+            self.last_tap_at = None;
+            true
+          }
+          _ => {
+            self.last_tap_at = Some(pressed);
+            false
+          }
+        }
+      }
+    }
+  }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
@@ -227,6 +295,155 @@ mod imp {
 #[cfg(target_os = "windows")]
 pub use imp::start;
 
+/// Double-tap window in ms (design value, docs/FEATURES.md).
+pub const ALT_TAP_WINDOW_MS: u64 = 350;
+
+#[cfg(target_os = "windows")]
+mod alt_hook {
+  use super::{AltTapTracker, KeyEvent, ALT_TAP_WINDOW_MS};
+  use std::cell::RefCell;
+  use std::time::Instant;
+  use tauri::Emitter;
+  use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+  use windows::Win32::UI::WindowsAndMessaging::{
+    CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, SetWindowsHookExW,
+    UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+  };
+
+  const VK_MENU: u32 = 0x12;
+  const VK_LMENU: u32 = 0xA4;
+  const VK_RMENU: u32 = 0xA5;
+
+  struct HookState {
+    tracker: AltTapTracker,
+    app: tauri::AppHandle,
+  }
+
+  thread_local! {
+    /// The hook is called on the thread that installed it, so a thread-local
+    /// keeps the callback lock-free.
+    static STATE: RefCell<Option<HookState>> = const { RefCell::new(None) };
+  }
+
+  fn is_alt(vk: u32) -> bool {
+    vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU
+  }
+
+  /// `WH_KEYBOARD_LL` callback. Every event is passed on untouched; only the
+  /// tracker state is touched here.
+  unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0 {
+      // SAFETY: for `WH_KEYBOARD_LL` with `code >= 0` the system passes a
+      // KBDLLHOOKSTRUCT pointer.
+      let info = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+      // Injected keys (Alt-menu suppression, other apps' macros) never count.
+      if !info.flags.contains(LLKHF_INJECTED) {
+        let message = wparam.0 as u32;
+        let down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
+        let up = message == WM_KEYUP || message == WM_SYSKEYUP;
+        if down || up {
+          let alt = is_alt(info.vkCode);
+          let event = match (alt, down) {
+            (true, true) => Some(KeyEvent::AltDown),
+            (true, false) => Some(KeyEvent::AltUp),
+            (false, true) => Some(KeyEvent::OtherDown),
+            (false, false) => None,
+          };
+          if let Some(event) = event {
+            if alt {
+              log::info!(
+                "alt {} (vk 0x{:X})",
+                if down { "down" } else { "up" },
+                info.vkCode
+              );
+            }
+            let fire = STATE.with(|cell| {
+              let mut slot = cell.borrow_mut();
+              let state = slot.as_mut()?;
+              state
+                .tracker
+                .on_event(event, Instant::now())
+                .then(|| state.app.clone())
+            });
+            if let Some(app) = fire {
+              log::info!("double alt detected, emitting toggle-request");
+              if let Err(err) = app.emit("toggle-request", serde_json::json!({ "source": "alt" })) {
+                log::warn!("failed to emit toggle-request: {err}");
+              }
+            }
+          }
+        }
+      }
+    }
+    // SAFETY: plain pass-through; the hook never swallows a key.
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+  }
+
+  /// Installs the low-level keyboard hook on its own thread. The thread must
+  /// run a message loop or the hook is never called.
+  pub fn start(app: tauri::AppHandle) {
+    let enabled = match crate::settings::load_settings(&app) {
+      Ok(settings) => settings.notch.alt_alt,
+      Err(err) => {
+        log::warn!("failed to read altAlt setting ({err}), keeping Alt Alt enabled");
+        true
+      }
+    };
+    if !enabled {
+      log::info!("alt alt disabled by settings");
+      return;
+    }
+
+    let spawned = std::thread::Builder::new()
+      .name("float-alt-hook".into())
+      .spawn(move || {
+        STATE.with(|cell| {
+          *cell.borrow_mut() = Some(HookState {
+            tracker: AltTapTracker::new(ALT_TAP_WINDOW_MS),
+            app,
+          });
+        });
+
+        // SAFETY: thread-local state is in place; hMod is NULL for a
+        // low-level hook, which also ties the hook to this thread.
+        let hook = match unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), None, 0) } {
+          Ok(hook) => hook,
+          Err(err) => {
+            log::error!("failed to install keyboard hook: {err}");
+            return;
+          }
+        };
+        log::info!("keyboard hook installed (double alt, {ALT_TAP_WINDOW_MS} ms window)");
+
+        let mut message = MSG::default();
+        loop {
+          // SAFETY: blocking wait; the low-level hook runs while we wait here,
+          // so messages are intentionally not dispatched.
+          let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
+          if result.0 == 0 {
+            break;
+          }
+          if result.0 == -1 {
+            log::error!("keyboard hook message loop failed");
+            break;
+          }
+        }
+
+        // SAFETY: `hook` came from SetWindowsHookExW on this thread.
+        let _ = unsafe { UnhookWindowsHookEx(hook) };
+        STATE.with(|cell| *cell.borrow_mut() = None);
+        log::info!("keyboard hook removed");
+      });
+
+    if let Err(err) = spawned {
+      log::error!("failed to start alt hook thread: {err}");
+    }
+  }
+}
+
+#[cfg(target_os = "windows")]
+pub use alt_hook::start as start_alt_hook;
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -294,5 +511,88 @@ mod tests {
     assert!(suppressed(false, true, true));
     assert!(!suppressed(false, true, false));
     assert!(!suppressed(false, false, true));
+  }
+
+  const WINDOW: u64 = ALT_TAP_WINDOW_MS;
+
+  fn at(base: Instant, ms: u64) -> Instant {
+    base + Duration::from_millis(ms)
+  }
+
+  /// Press and release Alt at `ms` (held for 20 ms).
+  fn tap(tracker: &mut AltTapTracker, base: Instant, ms: u64) -> bool {
+    assert!(!tracker.on_event(KeyEvent::AltDown, at(base, ms)));
+    tracker.on_event(KeyEvent::AltUp, at(base, ms + 20))
+  }
+
+  #[test]
+  fn alt_double_tap_within_350_ms_fires() {
+    let base = Instant::now();
+    let mut tracker = AltTapTracker::new(WINDOW);
+    assert!(!tap(&mut tracker, base, 0));
+    assert!(tap(&mut tracker, base, 200));
+  }
+
+  #[test]
+  fn alt_taps_500_ms_apart_do_not_fire() {
+    let base = Instant::now();
+    let mut tracker = AltTapTracker::new(WINDOW);
+    assert!(!tap(&mut tracker, base, 0));
+    assert!(!tap(&mut tracker, base, 500));
+  }
+
+  #[test]
+  fn alt_tab_does_not_fire() {
+    let base = Instant::now();
+    let mut tracker = AltTapTracker::new(WINDOW);
+    assert!(!tracker.on_event(KeyEvent::AltDown, at(base, 0)));
+    assert!(!tracker.on_event(KeyEvent::OtherDown, at(base, 10)));
+    assert!(!tracker.on_event(KeyEvent::AltUp, at(base, 40)));
+    // The dirty tap is discarded, so the next clean tap starts the sequence.
+    assert!(!tap(&mut tracker, base, 100));
+    assert!(tap(&mut tracker, base, 250));
+  }
+
+  #[test]
+  fn key_between_taps_resets_sequence() {
+    let base = Instant::now();
+    let mut tracker = AltTapTracker::new(WINDOW);
+    assert!(!tap(&mut tracker, base, 0));
+    assert!(!tracker.on_event(KeyEvent::OtherDown, at(base, 60)));
+    // Would have fired without the reset (100 ms after the previous tap).
+    assert!(!tap(&mut tracker, base, 100));
+    assert!(tap(&mut tracker, base, 200));
+  }
+
+  #[test]
+  fn held_alt_auto_repeat_counts_as_one_press() {
+    let base = Instant::now();
+    let mut tracker = AltTapTracker::new(WINDOW);
+    assert!(!tracker.on_event(KeyEvent::AltDown, at(base, 0)));
+    assert!(!tracker.on_event(KeyEvent::AltDown, at(base, 40)));
+    assert!(!tracker.on_event(KeyEvent::AltDown, at(base, 80)));
+    assert!(!tracker.on_event(KeyEvent::AltUp, at(base, 100)));
+    // Timed from the first key-down: 400 ms is outside the window, while the
+    // last auto-repeat (80 ms) would have been only 320 ms earlier.
+    assert!(!tracker.on_event(KeyEvent::AltDown, at(base, 400)));
+    assert!(!tracker.on_event(KeyEvent::AltUp, at(base, 420)));
+  }
+
+  #[test]
+  fn third_tap_after_fire_starts_new_sequence() {
+    let base = Instant::now();
+    let mut tracker = AltTapTracker::new(WINDOW);
+    assert!(!tap(&mut tracker, base, 0));
+    assert!(tap(&mut tracker, base, 100));
+    assert!(!tap(&mut tracker, base, 150));
+    assert!(tap(&mut tracker, base, 250));
+  }
+
+  #[test]
+  fn alt_up_without_alt_down_is_ignored() {
+    let base = Instant::now();
+    let mut tracker = AltTapTracker::new(WINDOW);
+    assert!(!tracker.on_event(KeyEvent::AltUp, at(base, 0)));
+    assert!(!tracker.on_event(KeyEvent::AltUp, at(base, 10)));
   }
 }

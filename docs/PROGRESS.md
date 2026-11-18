@@ -29,11 +29,13 @@ not started / in progress / done / blocked
 ### Phase 2 — Triggers
 - [x] Rust cursor poll ~60 Hz, 240x4 px zone, 180 ms dwell, mouse-button +
       fullscreen suppression
-- [ ] WH_KEYBOARD_LL hook thread: double-Alt 350 ms, custom shortcut parse,
-      Alt menu suppression (inject an unassigned virtual key — see
-      DECISIONS.md)
-- [ ] Pure functions + `cargo test` (dwell, alt-tap, shortcut)
-- [ ] Frontend consumes `open-request`/`toggle-request` events
+- [x] WH_KEYBOARD_LL hook thread: double-Alt 350 ms (`AltTapTracker`,
+      emits `toggle-request {source:"alt"}`)
+- [ ] Custom shortcut parse (JS handler still covers focused-window combos)
+- [ ] Alt menu suppression (inject an unassigned virtual key — see
+      DECISIONS.md); testable only after the hook is verified without it
+- [x] Pure functions + `cargo test` (dwell, alt-tap)
+- [x] Frontend consumes `open-request`/`toggle-request` events
 
 ### Phase 3 — Music (SMTC)
 - [ ] Now playing snapshot + events (session/props/playback/timeline)
@@ -124,6 +126,30 @@ Tauri 2 shell scaffolded:
 - Commands: settings_get, settings_set
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
 
+## Last session (double-Alt hook)
+Done: double-Alt moved into Rust. `AltTapTracker` (std only, pure) handles
+AltDown/AltUp/OtherDown with a 350 ms window, ignores auto-repeat, and is
+unit-tested (7 cases: in-window fire, 500 ms apart, Alt+Tab, key between taps,
+auto-repeat, third tap, stray AltUp). A dedicated thread installs
+`WH_KEYBOARD_LL` with `SetWindowsHookExW` and runs a `GetMessageW` loop.
+All four messages (WM_KEYDOWN/WM_KEYUP/WM_SYSKEYDOWN/WM_SYSKEYUP) are handled,
+Alt is 0x12/0xA4/0xA5, `LLKHF_INJECTED` events are dropped, and every event is
+passed on with `CallNextHookEx`. A fire emits `toggle-request {source:"alt"}`.
+`altAlt` is read once at thread start (like `topEdge`). Every Alt event and
+every fire is logged to `float.log` (log plugin now runs in release too and
+writes the `float` file name instead of `Float`).
+Frontend: the JS double-Alt sequence is disabled when `isTauriApp` (kept for the
+browser prototype); `toggle-request` opens pinned + focused (focus 80 ms after
+`set_ui_mode` shows the window) or closes when already open.
+Half-done / follow-ups:
+- No Alt-menu suppression yet (by design: test this first). Double-Alt may
+  still flash/focus the window menu; suppression injects an unassigned VK
+  (never F24) per DECISIONS.md.
+- `altAlt` is read only at startup; toggling it needs a restart until a
+  settings-changed hook exists.
+- Custom shortcuts (non "Alt Alt") still come from the JS handler and only work
+  while the panel has focus.
+
 ## Last session (settings naming)
 Done: TypeScript and Rust now share the same names and defaults —
 `hideInFullscreen` and `launchAtStartup` everywhere, defaults topEdge/altAlt/
@@ -203,3 +229,4 @@ Half-done / follow-ups:
 - Settings: real settingsService (settings_get/settings_set), persisted toggles, mock-only demo/lyrics/output controls.
 - Fonts/services: Inter bundled locally, Tauri-only notch render, services split into types/mock/tauri/index.
 - Settings: unified `hideInFullscreen`/`launchAtStartup` names and defaults across Rust/TypeScript.
+- Triggers: Rust WH_KEYBOARD_LL double-Alt hook (`toggle-request`), JS sequence Tauri-gated, pure tracker unit-tested.

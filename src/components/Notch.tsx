@@ -11,7 +11,14 @@ import {
   settingsService,
   type NotchSettings,
 } from "../services";
-import { onOpenRequest, setUiMode, type UiMode } from "../services/uiService";
+import { isTauriApp } from "../services/env";
+import {
+  focusNotchWindow,
+  onOpenRequest,
+  onToggleRequest,
+  setUiMode,
+  type UiMode,
+} from "../services/uiService";
 import { CalendarView } from "./CalendarView";
 import { CaptureView } from "./CaptureView";
 import { EventCard, JoinButton } from "./EventCard";
@@ -101,6 +108,7 @@ export function Notch() {
   const [settings, setSettings] = useState<NotchSettings>(DEFAULT_NOTCH_SETTINGS);
   const hoverTimer = useRef<number | undefined>(undefined);
   const leaveTimer = useRef<number | undefined>(undefined);
+  const focusTimer = useRef<number | undefined>(undefined);
   const completionTimer = useRef<number | undefined>(undefined);
   const reminderTimer = useRef<number | undefined>(undefined);
   const remindedEvent = useRef<string | null>(null);
@@ -184,6 +192,40 @@ export function Notch() {
     };
   }, []);
 
+  const close = useCallback(() => {
+    window.clearTimeout(focusTimer.current);
+    setPinned(false);
+    setExpanded(false);
+  }, []);
+
+  // Rust owns double-Alt in the real app (low-level hook); this event is the
+  // only toggle path there, so it must not fight the JS keyboard sequence.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void onToggleRequest(() => {
+      if (expandedRef.current) {
+        close();
+        return;
+      }
+      window.clearTimeout(hoverTimer.current);
+      window.clearTimeout(leaveTimer.current);
+      setPinned(true);
+      setExpanded(true);
+      // set_ui_mode shows the window; focus once it is visible.
+      window.clearTimeout(focusTimer.current);
+      focusTimer.current = window.setTimeout(focusNotchWindow, 80);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+      window.clearTimeout(focusTimer.current);
+    };
+  }, [close]);
+
   useEffect(() => {
     if (!playing) return;
     const id = window.setInterval(() => {
@@ -235,11 +277,6 @@ export function Notch() {
     return () => window.clearTimeout(showTimer);
   }, [events]);
 
-  const close = useCallback(() => {
-    setPinned(false);
-    setExpanded(false);
-  }, []);
-
   useEffect(() => {
     let lastAlt = 0;
     const toggleFromKeyboard = () => {
@@ -253,6 +290,9 @@ export function Notch() {
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Alt") {
+        // The real app uses the Rust WH_KEYBOARD_LL hook; the JS sequence is
+        // only for the browser prototype.
+        if (isTauriApp) return;
         event.preventDefault();
         if (event.repeat || !settings.altAlt || settings.shortcut !== "Alt Alt") return;
         const now = Date.now();

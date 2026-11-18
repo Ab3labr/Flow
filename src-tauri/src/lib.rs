@@ -29,13 +29,20 @@ pub fn run() {
         }
       }
 
-      if cfg!(debug_assertions) {
-        app.handle().plugin(
-          tauri_plugin_log::Builder::default()
-            .level(log::LevelFilter::Info)
-            .build(),
-        )?;
-      }
+      // Files land in the app log dir as float.log. Kept on in release builds:
+      // the Alt hook writes one line per key event for field diagnosis.
+      app.handle().plugin(
+        tauri_plugin_log::Builder::default()
+          .level(log::LevelFilter::Info)
+          .clear_targets()
+          .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout))
+          .target(tauri_plugin_log::Target::new(
+            tauri_plugin_log::TargetKind::LogDir {
+              file_name: Some("float".into()),
+            },
+          ))
+          .build(),
+      )?;
 
       let window = app.get_webview_window("main").unwrap();
 
@@ -79,7 +86,8 @@ pub fn run() {
         let handle = app.handle().clone();
         tauri::async_runtime::spawn(async move {
           settings::ensure_settings_file(&handle).await;
-          triggers::start(handle);
+          triggers::start(handle.clone());
+          triggers::start_alt_hook(handle);
         });
       }
 
