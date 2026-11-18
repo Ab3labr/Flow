@@ -3,6 +3,7 @@
 //! The frontend reports the desired mode; Rust owns size, position and
 //! click-through. Geometry is pure so DPI behaviour is unit-tested.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
 
 /// Extra height below the panel (shadow bleed).
@@ -13,6 +14,15 @@ pub const PILL_HEIGHT: f64 = 90.0;
 /// Collapsed bar size from the design (hidden in idle).
 pub const IDLE_WIDTH: f64 = 120.0;
 pub const IDLE_HEIGHT: f64 = 4.0;
+
+/// Last mode the frontend asked for. Idle is the only "closed" state, so a
+/// live pill still counts as open for trigger purposes.
+static PANEL_CLOSED: AtomicBool = AtomicBool::new(true);
+
+/// True while the panel is idle (hidden), i.e. hover may open it.
+pub fn is_closed() -> bool {
+  PANEL_CLOSED.load(Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiMode {
@@ -71,6 +81,7 @@ pub fn window_rect(
 
 /// Applies `mode` to the window, anchored to the monitor under the cursor.
 pub fn apply(window: &WebviewWindow, mode: UiMode, panel_height: f64) -> Result<(), String> {
+  PANEL_CLOSED.store(mode == UiMode::Idle, Ordering::Relaxed);
   let app = window.app_handle();
   let cursor = app.cursor_position().map_err(|err| err.to_string())?;
   let monitor = app

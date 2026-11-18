@@ -176,12 +176,14 @@ export function Notch() {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void onOpenRequest((requestedTab) => {
+    void onOpenRequest((request) => {
       window.clearTimeout(hoverTimer.current);
       window.clearTimeout(leaveTimer.current);
-      setPinned(true);
+      // Hover opens unpinned so the 400 ms leave timer still closes it;
+      // tray/other opens stay pinned until dismissed.
+      setPinned(request.source !== "hover");
       setExpanded(true);
-      if (requestedTab && isTabId(requestedTab)) setTab(requestedTab);
+      if (request.tab && isTabId(request.tab)) setTab(request.tab);
     }).then((stop) => {
       if (disposed) stop();
       else unlisten = stop;
@@ -349,6 +351,9 @@ export function Notch() {
   }, [close, settings.altAlt, settings.shortcut]);
 
   const openFromEdge = () => {
+    // The real app opens from the Rust hot-zone poll; this 1 px strip only
+    // drives the browser prototype.
+    if (isTauriApp) return;
     window.clearTimeout(leaveTimer.current);
     window.clearTimeout(hoverTimer.current);
     hoverTimer.current = window.setTimeout(() => setExpanded(true), 180);

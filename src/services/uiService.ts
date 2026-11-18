@@ -5,6 +5,8 @@ import { isTauriApp } from "./env";
 
 export type UiMode = "idle" | "pill" | "open";
 
+export type OpenRequest = { tab?: string; source?: "hover" };
+
 export function setUiMode(mode: UiMode, panelHeight: number): void {
   if (!isTauriApp) return;
   void invoke("set_ui_mode", { mode, panelHeight }).catch((error) => {
@@ -12,10 +14,10 @@ export function setUiMode(mode: UiMode, panelHeight: number): void {
   });
 }
 
-export function onOpenRequest(handler: (tab?: string) => void): Promise<() => void> {
+export function onOpenRequest(handler: (request: OpenRequest) => void): Promise<() => void> {
   if (!isTauriApp) return Promise.resolve(() => {});
-  return listen<{ tab?: string } | null>("open-request", (event) => {
-    handler(event.payload?.tab);
+  return listen<OpenRequest | null>("open-request", (event) => {
+    handler(event.payload ?? {});
   });
 }
 

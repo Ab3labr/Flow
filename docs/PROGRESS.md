@@ -27,8 +27,10 @@ not started / in progress / done / blocked
 - [x] `cargo check` + `pnpm tauri build` smoke test
 
 ### Phase 2 — Triggers
-- [x] Rust cursor poll ~60 Hz, 240x4 px zone, 180 ms dwell, mouse-button +
-      fullscreen suppression
+- [x] Rust cursor poll ~60 Hz: `in_hot_zone` in physical px (240x4 × monitor
+      scale), 180 ms dwell, mouse-button + fullscreen suppression (shell
+      classes excluded), emits `open-request {source:"hover"}` only while the
+      panel is idle
 - [x] WH_KEYBOARD_LL hook thread: double-Alt 350 ms (`AltTapTracker`,
       emits `toggle-request {source:"alt"}`)
 - [ ] Custom shortcut parse (JS handler still covers focused-window combos)
@@ -125,6 +127,33 @@ Tauri 2 shell scaffolded:
 - Settings file creation/load/save implemented (atomic temp+rename), stores NotchSettings, notesFolder, calendarAccounts, timerCustomTimes
 - Commands: settings_get, settings_set
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
+
+## Last session (hot-zone rewrite)
+Done: the top-edge trigger is now physical-px only. `in_hot_zone(cx, cy, mon_x,
+mon_y, mon_w, scale)` computes the 240x4 design zone × the monitor's scale
+factor (1.0/1.25/1.5 covered on 1920 and 2560 wide monitors, second monitor
+offsets incl. negative, half-open edges, top-edge anchoring). `DwellTracker`
+is now `new(ms)` + `update(inside, suppressed, now)` and resets on
+leave/suppress; tests cover too-short, exactly 180 ms, once per entry, and a
+suppression restart. The Windows glue polls every 16 ms, takes the monitor
+under the cursor (position/width/scale from that monitor), suppresses on L/R/M
+held or `hideInFullscreen` + a real fullscreen window (rect equals the whole
+monitor rect and class is not Progman/WorkerW/Shell_TrayWnd, so maximized and
+desktop do not count). It emits `open-request {source:"hover"}` only while the
+panel is closed (`window_mode::is_closed()` = last mode idle) and logs cursor /
+zone / scale / inside / suppressed once per second at debug level, plus a line
+on fire. Missing `topEdge` disables the thread at startup.
+Frontend: the JS 1 px hot-zone strip returns early in Tauri; `open-request`
+payloads are source-aware — `hover` opens unpinned (400 ms leave-close still
+applies), tray opens stay pinned.
+Half-done / follow-ups:
+- The 1 s diagnostics are at debug level while the global filter is Info, so
+  they only appear after raising the level (fire/suppression lines are Info).
+- `topEdge` / `hideInFullscreen` are still read once at thread start.
+- Fullscreen detection assumes a true-fullscreen window matches the monitor
+  rect exactly; verify borderless games and DPI changes on the PC (Phase 8).
+- `is_closed` trusts the last `set_ui_mode` call; if the frontend never
+  reports (e.g. crashed webview) hover stays suppressed until it does.
 
 ## Last session (double-Alt hook)
 Done: double-Alt moved into Rust. `AltTapTracker` (std only, pure) handles
@@ -230,3 +259,4 @@ Half-done / follow-ups:
 - Fonts/services: Inter bundled locally, Tauri-only notch render, services split into types/mock/tauri/index.
 - Settings: unified `hideInFullscreen`/`launchAtStartup` names and defaults across Rust/TypeScript.
 - Triggers: Rust WH_KEYBOARD_LL double-Alt hook (`toggle-request`), JS sequence Tauri-gated, pure tracker unit-tested.
+- Triggers: physical-px `in_hot_zone` + new `DwellTracker`, closed-only `open-request {source:"hover"}`, unpinned hover open.

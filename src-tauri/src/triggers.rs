@@ -8,10 +8,6 @@
 
 use std::time::{Duration, Instant};
 
-/// Zone width in logical px (design value, scaled to physical px).
-pub const ZONE_WIDTH_LOGICAL_PX: f64 = 240.0;
-/// Zone height in logical px (design value, scaled to physical px).
-pub const ZONE_HEIGHT_LOGICAL_PX: f64 = 4.0;
 /// Continuous dwell required before opening, in milliseconds.
 pub const DWELL_MS: u64 = 180;
 
@@ -81,67 +77,30 @@ impl AltTapTracker {
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Rect {
-  pub left: f64,
-  pub top: f64,
-  pub right: f64,
-  pub bottom: f64,
-}
-
-/// Zone centered horizontally on a monitor, anchored to its top edge.
-/// All values are physical px (`scale_factor` converts the logical design size).
-pub fn zone_rect(
-  monitor_left: f64,
-  monitor_top: f64,
-  monitor_width: f64,
-  scale_factor: f64,
-) -> Rect {
-  let width = ZONE_WIDTH_LOGICAL_PX * scale_factor;
-  let height = ZONE_HEIGHT_LOGICAL_PX * scale_factor;
-  let center_x = monitor_left + monitor_width / 2.0;
-  Rect {
-    left: center_x - width / 2.0,
-    top: monitor_top,
-    right: center_x + width / 2.0,
-    bottom: monitor_top + height,
-  }
-}
-
-pub fn contains(rect: &Rect, x: f64, y: f64) -> bool {
-  x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
-}
-
-/// True when the hot zone must not fire, regardless of dwell.
-pub fn suppressed(mouse_down: bool, foreground_fullscreen: bool, hide_in_fullscreen: bool) -> bool {
-  mouse_down || (hide_in_fullscreen && foreground_fullscreen)
-}
-
 /// Fires once per continuous dwell inside the zone.
-#[derive(Debug, Default)]
 pub struct DwellTracker {
-  inside_since: Option<u64>,
+  since: Option<Instant>,
   fired: bool,
+  dwell: Duration,
 }
 
 impl DwellTracker {
-  pub fn new() -> Self {
-    Self::default()
+  pub fn new(ms: u64) -> Self {
+    Self {
+      since: None,
+      fired: false,
+      dwell: Duration::from_millis(ms),
+    }
   }
-
-  pub fn reset(&mut self) {
-    self.inside_since = None;
-    self.fired = false;
-  }
-
-  /// Feed one poll. Returns `true` on the first poll at or after `DWELL_MS`.
-  pub fn update(&mut self, inside: bool, now_ms: u64) -> bool {
-    if !inside {
-      self.reset();
+  /// Call every poll. Returns true ONCE when the cursor has stayed in the zone long enough.
+  pub fn update(&mut self, inside: bool, suppressed: bool, now: Instant) -> bool {
+    if !inside || suppressed {
+      self.since = None;
+      self.fired = false;
       return false;
     }
-    let since = *self.inside_since.get_or_insert(now_ms);
-    if !self.fired && now_ms.saturating_sub(since) >= DWELL_MS {
+    let since = *self.since.get_or_insert(now);
+    if !self.fired && now.duration_since(since) >= self.dwell {
       self.fired = true;
       return true;
     }
@@ -149,9 +108,22 @@ impl DwellTracker {
   }
 }
 
+/// All values are PHYSICAL pixels. scale = the monitor's scale factor (1.25 at 125%).
+pub fn in_hot_zone(cx: i32, cy: i32, mon_x: i32, mon_y: i32, mon_w: i32, scale: f64) -> bool {
+  let zone_w = (240.0 * scale) as i32;
+  let zone_h = (4.0 * scale).ceil() as i32;
+  let left = mon_x + (mon_w - zone_w) / 2;
+  cx >= left && cx < left + zone_w && cy >= mon_y && cy < mon_y + zone_h
+}
+
+/// True when the hot zone must not fire, regardless of dwell.
+pub fn suppressed(mouse_down: bool, foreground_fullscreen: bool, hide_in_fullscreen: bool) -> bool {
+  mouse_down || (hide_in_fullscreen && foreground_fullscreen)
+}
+
 #[cfg(target_os = "windows")]
 mod imp {
-  use super::*;
+  use super::{in_hot_zone, suppressed, DwellTracker, DWELL_MS};
   use std::time::{Duration, Instant};
   use tauri::Emitter;
   use windows::Win32::Foundation::{HWND, POINT, RECT};
@@ -161,18 +133,16 @@ mod imp {
   };
   use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
   use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON, VK_XBUTTON1, VK_XBUTTON2,
+    GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
   };
-  use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetForegroundWindow, GetWindowRect};
+  use windows::Win32::UI::WindowsAndMessaging::{
+    GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindowRect,
+  };
 
   const POLL_INTERVAL: Duration = Duration::from_millis(16); // ~60 Hz
-
-  struct MonitorGeometry {
-    left: f64,
-    top: f64,
-    width: f64,
-    scale_factor: f64,
-  }
+  const REPORT_INTERVAL: Duration = Duration::from_secs(1);
+  /// Desktop/shell windows are never treated as fullscreen apps.
+  const SHELL_CLASSES: [&str; 3] = ["Progman", "WorkerW", "Shell_TrayWnd"];
 
   fn monitor_rect(hmonitor: HMONITOR) -> Option<RECT> {
     let mut info = MONITORINFO {
@@ -185,56 +155,54 @@ mod imp {
     Some(info.rcMonitor)
   }
 
-  fn monitor_geometry(hmonitor: HMONITOR) -> Option<MonitorGeometry> {
-    let rect = monitor_rect(hmonitor)?;
+  fn monitor_scale(hmonitor: HMONITOR) -> f64 {
     let mut dpi_x = 96u32;
     let mut dpi_y = 96u32;
-    let scale_factor =
-      if unsafe { GetDpiForMonitor(hmonitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) }.is_ok() {
-        dpi_x as f64 / 96.0
-      } else {
-        1.0
-      };
-    Some(MonitorGeometry {
-      left: rect.left as f64,
-      top: rect.top as f64,
-      width: (rect.right - rect.left) as f64,
-      scale_factor,
-    })
+    if unsafe { GetDpiForMonitor(hmonitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) }.is_ok() {
+      dpi_x as f64 / 96.0
+    } else {
+      1.0
+    }
   }
 
-  fn cursor_in_zone() -> bool {
+  /// Cursor position (physical px) plus the geometry of the monitor it is on.
+  fn cursor_monitor() -> Option<(POINT, RECT, f64)> {
     unsafe {
       let mut point = POINT::default();
       if GetCursorPos(&mut point).is_err() {
-        return false;
+        return None;
       }
       let hmonitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
-      let Some(monitor) = monitor_geometry(hmonitor) else {
-        return false;
-      };
-      let zone = zone_rect(
-        monitor.left,
-        monitor.top,
-        monitor.width,
-        monitor.scale_factor,
-      );
-      contains(&zone, point.x as f64, point.y as f64)
+      let rect = monitor_rect(hmonitor)?;
+      Some((point, rect, monitor_scale(hmonitor)))
     }
   }
 
   fn mouse_button_down() -> bool {
-    [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2]
+    [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
       .iter()
       .any(|vk| (unsafe { GetAsyncKeyState(vk.0 as i32) } as u16) & 0x8000 != 0)
   }
 
-  /// Foreground window covers its monitor's full bounds (heuristic; maximized
-  /// windows normally stop at the work area).
+  fn window_class(hwnd: HWND) -> String {
+    let mut buffer = [0u16; 64];
+    let len = unsafe { GetClassNameW(hwnd, &mut buffer) };
+    if len <= 0 {
+      return String::new();
+    }
+    String::from_utf16_lossy(&buffer[..len as usize])
+  }
+
+  /// True only when the foreground window covers its whole monitor (not the
+  /// work area) and is not the desktop/shell. A maximized window matches the
+  /// work area, so it does not count.
   fn foreground_fullscreen() -> bool {
     unsafe {
       let hwnd: HWND = GetForegroundWindow();
       if hwnd.0.is_null() {
+        return false;
+      }
+      if SHELL_CLASSES.contains(&window_class(hwnd).as_str()) {
         return false;
       }
       let mut window = RECT::default();
@@ -244,10 +212,10 @@ mod imp {
       let Some(monitor) = monitor_rect(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)) else {
         return false;
       };
-      window.left <= monitor.left
-        && window.top <= monitor.top
-        && window.right >= monitor.right
-        && window.bottom >= monitor.bottom
+      window.left == monitor.left
+        && window.top == monitor.top
+        && window.right == monitor.right
+        && window.bottom == monitor.bottom
     }
   }
 
@@ -264,24 +232,59 @@ mod imp {
     let spawned = std::thread::Builder::new()
       .name("float-hot-zone".into())
       .spawn(move || {
-        let mut tracker = DwellTracker::new();
-        let started = Instant::now();
+        let mut tracker = DwellTracker::new(DWELL_MS);
+        let mut last_report: Option<Instant> = None;
         loop {
-          let now_ms = started.elapsed().as_millis() as u64;
-          let inside = cursor_in_zone();
+          let now = Instant::now();
+          let hit = cursor_monitor();
+          let inside = hit
+            .map(|(point, rect, scale)| {
+              in_hot_zone(
+                point.x,
+                point.y,
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                scale,
+              )
+            })
+            .unwrap_or(false);
           let blocked = suppressed(
             mouse_button_down(),
-            foreground_fullscreen(),
+            hide_in_fullscreen && foreground_fullscreen(),
             hide_in_fullscreen,
           );
-          if blocked {
-            tracker.reset();
-          } else if tracker.update(inside, now_ms) {
-            log::info!("hot zone dwell reached, emitting open-request");
-            if let Err(err) = app.emit("open-request", ()) {
+
+          // `update` always runs so the state advances even while the panel is
+          // open; the event only goes out when the panel is closed.
+          if tracker.update(inside, blocked, now) && crate::window_mode::is_closed() {
+            log::info!("hot zone dwell reached, emitting open-request (hover)");
+            if let Err(err) = app.emit("open-request", serde_json::json!({ "source": "hover" })) {
               log::warn!("failed to emit open-request: {err}");
             }
           }
+
+          if last_report.map_or(true, |at| now.duration_since(at) >= REPORT_INTERVAL) {
+            last_report = Some(now);
+            match hit {
+              Some((point, rect, scale)) => {
+                let zone_w = (240.0 * scale) as i32;
+                let zone_h = (4.0 * scale).ceil() as i32;
+                let left = rect.left + (rect.right - rect.left - zone_w) / 2;
+                log::debug!(
+                  "hot zone: cursor=({}, {}) zone=({}, {})..({}, {}) scale={scale} inside={inside} suppressed={blocked}",
+                  point.x,
+                  point.y,
+                  left,
+                  rect.top,
+                  left + zone_w,
+                  rect.top + zone_h
+                );
+              }
+              None => log::debug!("hot zone: cursor position unavailable"),
+            }
+          }
+
           std::thread::sleep(POLL_INTERVAL);
         }
       });
@@ -449,59 +452,107 @@ mod tests {
   use super::*;
 
   #[test]
-  fn zone_is_centered_on_monitor() {
-    let zone = zone_rect(0.0, 0.0, 1920.0, 1.0);
-    assert_eq!(zone.left, 840.0);
-    assert_eq!(zone.right, 1080.0);
-    assert_eq!(zone.top, 0.0);
-    assert_eq!(zone.bottom, 4.0);
+  fn zone_is_centered_at_scale_1() {
+    // 1920 wide: (1920 - 240) / 2 = 840, 4 px tall, half-open right/bottom.
+    assert!(in_hot_zone(840, 0, 0, 0, 1920, 1.0));
+    assert!(in_hot_zone(1079, 3, 0, 0, 1920, 1.0));
+    assert!(!in_hot_zone(839, 0, 0, 0, 1920, 1.0));
+    assert!(!in_hot_zone(1080, 0, 0, 0, 1920, 1.0));
+    assert!(!in_hot_zone(960, 4, 0, 0, 1920, 1.0));
   }
 
   #[test]
-  fn zone_scales_with_dpi_and_offsets_with_monitor() {
-    let zone = zone_rect(1920.0, -180.0, 2560.0, 1.5);
-    assert_eq!(zone.left, 1920.0 + 1280.0 - 180.0);
-    assert_eq!(zone.right, 1920.0 + 1280.0 + 180.0);
-    assert_eq!(zone.top, -180.0);
-    assert_eq!(zone.bottom, -174.0);
+  fn zone_scales_at_125_and_150_on_1920() {
+    // 125%: 300 x 5 starting at 810. 150%: 360 x 6 starting at 780.
+    assert!(in_hot_zone(810, 4, 0, 0, 1920, 1.25));
+    assert!(in_hot_zone(1109, 0, 0, 0, 1920, 1.25));
+    assert!(!in_hot_zone(809, 0, 0, 0, 1920, 1.25));
+    assert!(!in_hot_zone(1110, 0, 0, 0, 1920, 1.25));
+    assert!(!in_hot_zone(900, 5, 0, 0, 1920, 1.25));
+
+    assert!(in_hot_zone(780, 5, 0, 0, 1920, 1.5));
+    assert!(in_hot_zone(1139, 0, 0, 0, 1920, 1.5));
+    assert!(!in_hot_zone(779, 0, 0, 0, 1920, 1.5));
+    assert!(!in_hot_zone(1140, 0, 0, 0, 1920, 1.5));
+    assert!(!in_hot_zone(900, 6, 0, 0, 1920, 1.5));
   }
 
   #[test]
-  fn zone_edges_are_half_open() {
-    let zone = zone_rect(0.0, 0.0, 1920.0, 1.0);
-    assert!(contains(&zone, 840.0, 0.0));
-    assert!(contains(&zone, 1079.9, 3.9));
-    assert!(!contains(&zone, 839.9, 0.0));
-    assert!(!contains(&zone, 1080.0, 0.0));
-    assert!(!contains(&zone, 960.0, 4.0));
+  fn zone_on_2560_wide_monitor_at_every_scale() {
+    assert!(in_hot_zone(1160, 0, 0, 0, 2560, 1.0)); // 240 wide -> 1160..1400
+    assert!(in_hot_zone(1399, 3, 0, 0, 2560, 1.0));
+    assert!(!in_hot_zone(1400, 0, 0, 0, 2560, 1.0));
+    assert!(in_hot_zone(1130, 0, 0, 0, 2560, 1.25)); // 300 wide -> 1130..1430
+    assert!(in_hot_zone(1429, 4, 0, 0, 2560, 1.25));
+    assert!(!in_hot_zone(1430, 0, 0, 0, 2560, 1.25));
+    assert!(in_hot_zone(1100, 0, 0, 0, 2560, 1.5)); // 360 wide -> 1100..1460
+    assert!(in_hot_zone(1459, 5, 0, 0, 2560, 1.5));
+    assert!(!in_hot_zone(1460, 0, 0, 0, 2560, 1.5));
   }
 
   #[test]
-  fn dwell_requires_180_ms() {
-    let mut tracker = DwellTracker::new();
-    assert!(!tracker.update(true, 0));
-    assert!(!tracker.update(true, 179));
-    assert!(tracker.update(true, 180));
+  fn zone_follows_second_monitor_offset() {
+    // Second 1920-wide monitor starting at x = 1920 (scale 1.0).
+    assert!(!in_hot_zone(1919, 0, 1920, 0, 1920, 1.0));
+    assert!(in_hot_zone(2760, 0, 1920, 0, 1920, 1.0)); // 1920 + 840
+    assert!(!in_hot_zone(2759, 0, 1920, 0, 1920, 1.0));
+    assert!(!in_hot_zone(3000, 0, 1920, 0, 1920, 1.0));
+    // Monitor left of the primary at 125%: 1920 + (1920 - 300) / 2 above 0.
+    assert!(in_hot_zone(-1110, 0, -1920, 0, 1920, 1.25));
+    assert!(!in_hot_zone(-1111, 0, -1920, 0, 1920, 1.25));
+    assert!(!in_hot_zone(-810, 0, -1920, 0, 1920, 1.25));
+  }
+
+  #[test]
+  fn zone_is_anchored_to_monitor_top_edge() {
+    // Monitor above the primary (y = -1080) at 150%.
+    assert!(in_hot_zone(840, -1080, 0, -1080, 1920, 1.5));
+    assert!(!in_hot_zone(840, -1081, 0, -1080, 1920, 1.5));
+    assert!(!in_hot_zone(840, -1074, 0, -1080, 1920, 1.5));
+  }
+
+  #[test]
+  fn dwell_too_short_does_not_fire() {
+    let t0 = Instant::now();
+    let mut tracker = DwellTracker::new(DWELL_MS);
+    assert!(!tracker.update(true, false, t0));
+    assert!(!tracker.update(true, false, t0 + Duration::from_millis(179)));
+  }
+
+  #[test]
+  fn dwell_fires_at_exactly_180_ms() {
+    let t0 = Instant::now();
+    let mut tracker = DwellTracker::new(DWELL_MS);
+    assert!(!tracker.update(true, false, t0));
+    assert!(tracker.update(true, false, t0 + Duration::from_millis(180)));
   }
 
   #[test]
   fn dwell_fires_once_per_entry() {
-    let mut tracker = DwellTracker::new();
-    assert!(!tracker.update(true, 0));
-    assert!(tracker.update(true, 200));
-    assert!(!tracker.update(true, 400));
-    assert!(!tracker.update(true, 600));
+    let t0 = Instant::now();
+    let mut tracker = DwellTracker::new(DWELL_MS);
+    assert!(!tracker.update(true, false, t0));
+    assert!(tracker.update(true, false, t0 + Duration::from_millis(200)));
+    assert!(!tracker.update(true, false, t0 + Duration::from_millis(400)));
+    assert!(!tracker.update(true, false, t0 + Duration::from_millis(600)));
+    // Leaving and coming back re-arms exactly one more fire.
+    assert!(!tracker.update(false, false, t0 + Duration::from_millis(700)));
+    assert!(!tracker.update(true, false, t0 + Duration::from_millis(800)));
+    assert!(!tracker.update(true, false, t0 + Duration::from_millis(979)));
+    assert!(tracker.update(true, false, t0 + Duration::from_millis(980)));
+    assert!(!tracker.update(true, false, t0 + Duration::from_millis(1200)));
   }
 
   #[test]
-  fn leaving_zone_rearms_dwell() {
-    let mut tracker = DwellTracker::new();
-    assert!(!tracker.update(true, 0));
-    assert!(tracker.update(true, 180));
-    assert!(!tracker.update(false, 200));
-    assert!(!tracker.update(true, 300));
-    assert!(!tracker.update(true, 479));
-    assert!(tracker.update(true, 480));
+  fn suppression_and_leaving_restart_the_dwell() {
+    let t0 = Instant::now();
+    let mut tracker = DwellTracker::new(DWELL_MS);
+    assert!(!tracker.update(true, false, t0));
+    // A mouse press (or fullscreen) restarts the clock.
+    assert!(!tracker.update(true, true, t0 + Duration::from_millis(100)));
+    assert!(!tracker.update(true, false, t0 + Duration::from_millis(200)));
+    assert!(!tracker.update(true, false, t0 + Duration::from_millis(379)));
+    assert!(tracker.update(true, false, t0 + Duration::from_millis(380)));
   }
 
   #[test]

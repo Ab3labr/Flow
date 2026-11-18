@@ -124,11 +124,18 @@ Close-on-outside-click: webview can't see outside clicks → Rust watches
 window blur (`Focused` event) → emit `close-request` → frontend `close()`.
 
 ### Triggers (Phase 2)
-- Cursor poll thread ~60 Hz (`GetCursorPos`, `GetAsyncKeyState` for mouse
-  buttons, foreground-window fullscreen check). Pure `DwellTracker`:
-  open after 180 ms continuous dwell in 240x4 logical-px zone centered on
-  monitor; suppressed while mouse down or (if enabled) fullscreen app
-  foreground. All math in physical px using `scale_factor`.
+- Cursor poll thread ~60 Hz: `GetCursorPos` (physical px), the monitor under
+  the cursor contributes its position/width/scale, `GetAsyncKeyState` (L/R/M)
+  and a foreground-window fullscreen check. Pure `DwellTracker`: fires once
+  after 180 ms continuous dwell in the 240x4 physical-px zone (`in_hot_zone`,
+  design size × monitor `scale_factor`); inside + not suppressed resets the
+  clock. Suppressed while a mouse button is held or (if `hideInFullscreen`) a
+  fullscreen app is in front. Fullscreen means the foreground window's rect
+  equals the whole monitor rect and its class is not Progman / WorkerW /
+  Shell_TrayWnd, so maximized windows and the desktop never count.
+- Hot zone emits `open-request {source:"hover"}` only while the panel is
+  closed (idle). The frontend opens it unpinned, so the 400 ms leave timer
+  still closes it. The JS 1 px hot-zone strip is browser-prototype only.
 - Keyboard hook thread: `WH_KEYBOARD_LL` + message loop. Pure
   `AltTapTracker` (350 ms window, any other key resets) + `Shortcut`
   parser for `settings.shortcut`. On Alt keydown inject an unassigned virtual key (not F24) via
