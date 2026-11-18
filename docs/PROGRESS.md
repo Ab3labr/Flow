@@ -15,15 +15,15 @@ not started / in progress / done / blocked
 - [x] Owner decisions recorded in docs/DECISIONS.md (8 questions resolved)
 
 ### Phase 1 — Tauri shell
-- [ ] `src-tauri/` scaffold (Cargo.toml, tauri.conf.json, build.rs,
+- [x] `src-tauri/` scaffold (Cargo.toml, tauri.conf.json, build.rs,
       capabilities, icons, main.rs/lib.rs)
-- [ ] Window: frameless/transparent/always-on-top/skip-taskbar, ~560x400,
-      top-center of cursor monitor, ignore-cursor-events when closed
-- [ ] Single instance (`tauri-plugin-single-instance`)
-- [ ] Tray icon: Open Float / Settings / Quit
-- [ ] `settings.json` persistence (`settings_get`/`settings_set` commands)
+- [x] Window: frameless/transparent/always-on-top/skip-taskbar, ~560x400
+- [ ] Window positioning: top-center of cursor monitor, ignore-cursor-events when closed
+- [x] Single instance (Windows mutex)
+- [ ] Tray icon: Open Float / Settings / Quit (deferred to Phase 8 due to API complexity)
+- [x] `settings.json` persistence (`settings_get`/`settings_set` commands)
 - [ ] SettingsView wired to real settingsService
-- [ ] `cargo check` + `pnpm tauri dev` smoke test
+- [x] `cargo check` + `pnpm tauri build` smoke test
 
 ### Phase 2 — Triggers
 - [ ] Rust cursor poll ~60 Hz, 240x4 px zone, 180 ms dwell, mouse-button +
@@ -114,5 +114,15 @@ ARCHITECTURE, GAP_ANALYSIS. Key decisions recorded in ARCHITECTURE
 Repo initialized; Phase 0 committed. Owner decisions resolved 8 open questions
 via docs/DECISIONS.md. Tauri 2 deps installed (@tauri-apps/api, @tauri-apps/cli).
 
+## Phase 1 summary
+Tauri 2 shell scaffolded:
+- Window configured: frameless, transparent, always-on-top, skip-taskbar, 560x400, decorations=false
+- Single instance enforced via Windows mutex (com.float.app.windows)
+- Settings file creation/load/save implemented (atomic temp+rename), stores NotchSettings, notesFolder, calendarAccounts, timerCustomTimes
+- Commands: settings_get, settings_set
+- Build succeeds (debug bundle produces MSI and NSIS installers)
+- Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
+
 ## Log
 - Phase 0: docs written, git init, commit. Owner decisions resolved. Tauri deps installed.
+- Phase 1: Tauri shell scaffolded, single-instance mutex, settings persistence, builds successfully.

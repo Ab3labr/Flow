@@ -20,5 +20,5 @@ UI/UX
 Phase 1
 - @tauri-apps/api ^2.12.5: Tauri 2 frontend bindings
 - @tauri-apps/cli ^2.12.5: Tauri 2 CLI for dev/build
-- tauri-plugin-single-instance: enforce single app instance
+- windows ^0.62 (Win32_Foundation, Win32_System_Threading): single-instance enforcement via mutex (spec requirement)
 - tauri-plugin-autostart: launch at startup (Phase 8)
