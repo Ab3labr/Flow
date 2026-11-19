@@ -10,8 +10,13 @@ use tauri::{Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
 /// Extra height below the panel (shadow bleed).
 pub const PANEL_BLEED: f64 = 40.0;
 pub const OPEN_WIDTH: f64 = 560.0;
-pub const PILL_WIDTH: f64 = 200.0;
-pub const PILL_HEIGHT: f64 = 90.0;
+/// Total transparent margin around the compact bar (16 px each side).
+pub const PILL_MARGIN_X: f64 = 32.0;
+/// Transparent margin below the compact bar (room for the glow).
+pub const PILL_MARGIN_Y: f64 = 18.0;
+/// Used only when an old frontend sends no bar dimensions.
+pub const DEFAULT_BAR_WIDTH: f64 = 150.0;
+pub const DEFAULT_BAR_HEIGHT: f64 = 30.0;
 /// Collapsed bar size from the design (hidden in idle).
 pub const IDLE_WIDTH: f64 = 120.0;
 pub const IDLE_HEIGHT: f64 = 4.0;
@@ -136,10 +141,22 @@ impl UiMode {
     }
   }
 
-  fn logical_size(self, panel_height: f64) -> (f64, f64) {
+  fn logical_size(self, panel_height: f64, bar_width: f64, bar_height: f64) -> (f64, f64) {
     match self {
       Self::Idle => (IDLE_WIDTH, IDLE_HEIGHT),
-      Self::Pill => (PILL_WIDTH, PILL_HEIGHT),
+      Self::Pill => {
+        let width = if bar_width > 0.0 {
+          bar_width
+        } else {
+          DEFAULT_BAR_WIDTH
+        };
+        let height = if bar_height > 0.0 {
+          bar_height
+        } else {
+          DEFAULT_BAR_HEIGHT
+        };
+        (width + PILL_MARGIN_X, height + PILL_MARGIN_Y)
+      }
       Self::Open => (OPEN_WIDTH, panel_height.max(0.0) + PANEL_BLEED),
     }
   }
@@ -157,12 +174,14 @@ pub struct WindowRect {
 pub fn window_rect(
   mode: UiMode,
   panel_height: f64,
+  bar_width: f64,
+  bar_height: f64,
   monitor_x: i32,
   monitor_y: i32,
   monitor_width: u32,
   scale_factor: f64,
 ) -> WindowRect {
-  let (logical_width, logical_height) = mode.logical_size(panel_height);
+  let (logical_width, logical_height) = mode.logical_size(panel_height, bar_width, bar_height);
   let width = (logical_width * scale_factor).round() as u32;
   let height = (logical_height * scale_factor).round() as u32;
   let x = monitor_x + (monitor_width as i32 - width as i32) / 2;
@@ -181,6 +200,8 @@ pub fn apply(
   state: &AppState,
   mode: UiMode,
   panel_height: f64,
+  bar_width: f64,
+  bar_height: f64,
   pinned: bool,
 ) -> Result<(), String> {
   let app = window.app_handle();
@@ -195,6 +216,8 @@ pub fn apply(
   let rect = window_rect(
     mode,
     panel_height,
+    bar_width,
+    bar_height,
     monitor.position().x,
     monitor.position().y,
     monitor.size().width,
@@ -248,6 +271,8 @@ pub fn set_ui_mode(
   state: tauri::State<'_, AppState>,
   mode: String,
   panel_height: f64,
+  bar_width: f64,
+  bar_height: f64,
   pinned: bool,
 ) -> Result<(), String> {
   apply(
@@ -255,6 +280,8 @@ pub fn set_ui_mode(
     state.inner(),
     UiMode::parse(&mode)?,
     panel_height,
+    bar_width,
+    bar_height,
     pinned,
   )
 }
@@ -265,7 +292,7 @@ mod tests {
 
   #[test]
   fn open_is_560_wide_and_adds_40() {
-    let rect = window_rect(UiMode::Open, 172.0, 0, 0, 1920, 1.0);
+    let rect = window_rect(UiMode::Open, 172.0, 0.0, 0.0, 0, 0, 1920, 1.0);
     assert_eq!(rect.width, 560);
     assert_eq!(rect.height, 212);
     assert_eq!(rect.x, 680);
@@ -274,7 +301,7 @@ mod tests {
 
   #[test]
   fn open_scales_at_125_percent() {
-    let rect = window_rect(UiMode::Open, 172.0, 0, 0, 1920, 1.25);
+    let rect = window_rect(UiMode::Open, 172.0, 0.0, 0.0, 0, 0, 1920, 1.25);
     assert_eq!(rect.width, 700);
     assert_eq!(rect.height, 265);
     assert_eq!(rect.x, 610);
@@ -282,29 +309,40 @@ mod tests {
 
   #[test]
   fn open_scales_at_150_percent() {
-    let rect = window_rect(UiMode::Open, 172.0, 0, 0, 1920, 1.5);
+    let rect = window_rect(UiMode::Open, 172.0, 0.0, 0.0, 0, 0, 1920, 1.5);
     assert_eq!(rect.width, 840);
     assert_eq!(rect.height, 318);
     assert_eq!(rect.x, 540);
   }
 
   #[test]
-  fn pill_is_200_by_90_logical() {
-    let rect = window_rect(UiMode::Pill, 340.0, 0, 0, 1920, 1.0);
-    assert_eq!((rect.width, rect.height), (200, 90));
-    let scaled = window_rect(UiMode::Pill, 340.0, 0, 0, 1920, 1.25);
-    assert_eq!((scaled.width, scaled.height), (250, 113));
+  fn pill_uses_the_bar_size_plus_margins() {
+    let rect = window_rect(UiMode::Pill, 340.0, 150.0, 30.0, 0, 0, 1920, 1.0);
+    assert_eq!((rect.width, rect.height), (182, 48));
+    assert_eq!(rect.x, (1920 - 182) / 2);
+
+    let wide = window_rect(UiMode::Pill, 340.0, 260.0, 30.0, 0, 0, 1920, 1.0);
+    assert_eq!((wide.width, wide.height), (292, 48));
+
+    let scaled = window_rect(UiMode::Pill, 340.0, 150.0, 30.0, 0, 0, 1920, 1.25);
+    assert_eq!((scaled.width, scaled.height), (228, 60));
+  }
+
+  #[test]
+  fn pill_falls_back_when_dimensions_are_missing() {
+    let rect = window_rect(UiMode::Pill, 340.0, 0.0, 0.0, 0, 0, 1920, 1.0);
+    assert_eq!((rect.width, rect.height), (182, 48));
   }
 
   #[test]
   fn idle_matches_collapsed_bar() {
-    let rect = window_rect(UiMode::Idle, 172.0, 0, 0, 1920, 1.0);
+    let rect = window_rect(UiMode::Idle, 172.0, 0.0, 0.0, 0, 0, 1920, 1.0);
     assert_eq!((rect.width, rect.height), (120, 4));
   }
 
   #[test]
   fn centers_on_offset_monitor() {
-    let rect = window_rect(UiMode::Open, 172.0, 1920, -180, 2560, 1.0);
+    let rect = window_rect(UiMode::Open, 172.0, 0.0, 0.0, 1920, -180, 2560, 1.0);
     assert_eq!(rect.x, 1920 + (2560 - 560) / 2);
     assert_eq!(rect.y, -180);
   }

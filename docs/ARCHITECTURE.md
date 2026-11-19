@@ -100,9 +100,11 @@ the cursor, y=0. Because it is centered for every width, panel
 `left-1/2 -translate-x-1/2` stays screen-centered at any window width.
 
 State-driven geometry + input (Rust owns, frontend reports via the
-`set_ui_mode(mode, panel_height)` command):
+`set_ui_mode(mode, panel_height, bar_width, bar_height, pinned)` command):
 - **idle:** `set_ignore_cursor_events(true)` and hidden.
-- **pill:** 200x90 logical, input accepted (ignore=false).
+- **pill:** `(bar width + 32) x (bar height + 18)` logical, centered on the top
+  edge, input accepted. A compact music bar is 150-260 x 30; the older
+  recording/timer/reminder pills pass 108 x 26.
 - **open:** 560 x (panel height + 40) logical, input accepted.
 
 Every mode is horizontally centered, y=0, on the monitor under the cursor,

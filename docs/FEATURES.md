@@ -53,6 +53,25 @@ Collapsed sizes: `120x4` invisible sliver (opacity 0) or `108x26` pill when
 Pill precedence: recording > timerComplete > reminder. Hover/click on pill
 expands panel.
 
+### Compact live bar (Phase 3D)
+A reusable activity bar for music (recording/timer/reminder still use their
+own pills). It appears only when `compactBar` is on, the panel is closed, an
+activity exists, and no fullscreen app is in front while `hideInFullscreen` is
+on. Bar: height **30**, width fits content **150-260**, bottom radius **15**,
+flush to the top edge, `bg-black`, panel shadow. Leading slot 20x20 radius 6
+(art, app initial on the track gradient, or icon); label 11px medium, one line,
+ellipsis; trailing 3-bar equalizer in the art's dominant colour (fallback
+`#f09ab7`), flat when paused. A soft glow sits under the bar in the same colour
+(28% max, 8px blur, 3 s pulse while playing, static when paused).
+
+Music is an activity while the shown session plays. A pause keeps it for
+**3000 ms** with flat bars, then removes it; resuming re-adds it. Hover opens
+the panel on Home unpinned, click opens it pinned, and closing the panel while
+music plays returns to the bar. Motion: the panel container springs
+380/30/0.9 from the 120x4 sliver; content fades in from 6px blur; titles
+crossfade with a 5px slide (260 ms). Reduced motion uses 150 ms fades.
+Priorities: recording 100, timer done 90, meeting reminder 80, music 10.
+
 ### Panel geometry
 Expanded: width **480**, height per tab — home 172, timer 250, calendar
 230, capture 185, settings 340, notes dynamic 172→340. Top-center,

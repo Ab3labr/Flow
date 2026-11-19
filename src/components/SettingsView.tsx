@@ -62,6 +62,7 @@ export function SettingsView({
     { key: "launchAtStartup", label: "Launch at startup" },
     { key: "upcomingEvent", label: "Demo: upcoming event", demo: true },
     { key: "noCalendars", label: "Demo: no calendars connected", demo: true },
+    { key: "compactBar", label: "Compact music bar" },
   ];
 
   return (
@@ -71,52 +72,54 @@ export function SettingsView({
           Notch settings
         </p>
         <div className="overflow-hidden rounded-[14px] border border-[#1f1f1f] bg-[#121212]">
-          {rows.filter((row) => !row.demo || isMockMode).map(({ key, label }) => (
-            <div
-              key={key}
-              className="flex h-8 items-center justify-between border-b border-white/[0.06] px-2.5 last:border-0"
-            >
-              <span
-                className={`text-[11px] transition-colors ${
-                  settings[key] ? "text-white" : "text-white/50"
-                }`}
+          {rows
+            .filter((row) => !row.demo || isMockMode)
+            .map(({ key, label }) => (
+              <div
+                key={key}
+                className="flex h-8 items-center justify-between border-b border-white/[0.06] px-2.5 last:border-0"
               >
-                {label}
-              </span>
-              <div className="flex items-center gap-2">
-                {key === "altAlt" && (
-                  <input
-                    aria-label="Open shortcut"
-                    value={settings.shortcut}
-                    readOnly
-                    onKeyDown={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      const pressedKey =
-                        event.key === " "
-                          ? "Space"
-                          : event.key.length === 1
-                            ? event.key.toUpperCase()
-                            : event.key.replace("Control", "Ctrl");
-                      const parts = [
-                        event.ctrlKey && pressedKey !== "Ctrl" ? "Ctrl" : "",
-                        event.altKey && pressedKey !== "Alt" ? "Alt" : "",
-                        event.shiftKey && pressedKey !== "Shift" ? "Shift" : "",
-                        event.metaKey && pressedKey !== "Meta" ? "Meta" : "",
-                        pressedKey,
-                      ].filter(Boolean);
-                      onChange({ ...settings, shortcut: parts.join(" + ") });
-                    }}
-                    className="w-[58px] rounded-md border border-white/10 bg-[#1c1c1c] px-1 py-0.5 text-center text-[11px] text-white/60"
+                <span
+                  className={`text-[11px] transition-colors ${
+                    settings[key] ? "text-white" : "text-white/50"
+                  }`}
+                >
+                  {label}
+                </span>
+                <div className="flex items-center gap-2">
+                  {key === "altAlt" && (
+                    <input
+                      aria-label="Open shortcut"
+                      value={settings.shortcut}
+                      readOnly
+                      onKeyDown={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const pressedKey =
+                          event.key === " "
+                            ? "Space"
+                            : event.key.length === 1
+                              ? event.key.toUpperCase()
+                              : event.key.replace("Control", "Ctrl");
+                        const parts = [
+                          event.ctrlKey && pressedKey !== "Ctrl" ? "Ctrl" : "",
+                          event.altKey && pressedKey !== "Alt" ? "Alt" : "",
+                          event.shiftKey && pressedKey !== "Shift" ? "Shift" : "",
+                          event.metaKey && pressedKey !== "Meta" ? "Meta" : "",
+                          pressedKey,
+                        ].filter(Boolean);
+                        onChange({ ...settings, shortcut: parts.join(" + ") });
+                      }}
+                      className="w-[58px] rounded-md border border-white/10 bg-[#1c1c1c] px-1 py-0.5 text-center text-[11px] text-white/60"
+                    />
+                  )}
+                  <Toggle
+                    value={settings[key] as boolean}
+                    onChange={() => onChange({ ...settings, [key]: !settings[key] })}
                   />
-                )}
-                <Toggle
-                  value={settings[key] as boolean}
-                  onChange={() => onChange({ ...settings, [key]: !settings[key] })}
-                />
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
         </div>
 
         <div className="mb-1.5 mt-3 flex items-center justify-between">

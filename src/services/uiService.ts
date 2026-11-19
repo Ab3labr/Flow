@@ -13,11 +13,29 @@ export type OpenRequest = {
 
 export type CloseRequest = { source?: "alt" | "esc" | "outside" };
 
-export function setUiMode(mode: UiMode, panelHeight: number, pinned = false): void {
+export function setUiMode(
+  mode: UiMode,
+  panelHeight: number,
+  pinned = false,
+  barWidth = 108,
+  barHeight = 26,
+): void {
   if (!isTauriApp) return;
-  void invoke("set_ui_mode", { mode, panelHeight, pinned }).catch((error) => {
+  void invoke("set_ui_mode", {
+    mode,
+    panelHeight,
+    pinned,
+    barWidth,
+    barHeight,
+  }).catch((error) => {
     console.error("set_ui_mode failed", error);
   });
+}
+
+/** True while a fullscreen app is in front (Rust trigger probe). */
+export function isFullscreenAppActive(): Promise<boolean> {
+  if (!isTauriApp) return Promise.resolve(false);
+  return invoke<boolean>("fullscreen_active").catch(() => false);
 }
 
 export function onOpenRequest(handler: (request: OpenRequest) => void): Promise<() => void> {

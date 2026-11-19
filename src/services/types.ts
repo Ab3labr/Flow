@@ -53,6 +53,7 @@ export type NotchSettings = {
   launchAtStartup: boolean;
   upcomingEvent: boolean;
   noCalendars: boolean;
+  compactBar: boolean;
   shortcut: string;
 };
 
@@ -63,5 +64,6 @@ export const DEFAULT_NOTCH_SETTINGS: NotchSettings = {
   launchAtStartup: true,
   upcomingEvent: true,
   noCalendars: false,
+  compactBar: true,
   shortcut: "Alt Alt",
 };

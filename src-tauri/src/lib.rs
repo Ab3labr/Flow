@@ -17,7 +17,8 @@ pub fn run() {
       music::media_next,
       music::media_prev,
       music::media_seek,
-      window_mode::set_ui_mode
+      window_mode::set_ui_mode,
+      fullscreen_active
     ])
     .setup(|app| {
       #[cfg(target_os = "windows")]
@@ -62,6 +63,8 @@ pub fn run() {
           &window,
           state.inner(),
           window_mode::UiMode::Idle,
+          0.0,
+          0.0,
           0.0,
           false,
         ) {
@@ -165,6 +168,8 @@ mod settings {
     pub upcoming_event: bool,
     #[serde(default)]
     pub no_calendars: bool,
+    #[serde(default = "default_true")]
+    pub compact_bar: bool,
     #[serde(default = "default_shortcut")]
     pub shortcut: String,
   }
@@ -180,6 +185,7 @@ mod settings {
         launch_at_startup: true,
         upcoming_event: true,
         no_calendars: false,
+        compact_bar: true,
         shortcut: default_shortcut(),
       }
     }
@@ -268,6 +274,7 @@ mod settings {
       "launchAtStartup": true,
       "upcomingEvent": true,
       "noCalendars": false,
+      "compactBar": true,
       "shortcut": "Alt Alt"
     },
     "notesFolder": null,
@@ -362,6 +369,7 @@ mod settings {
       assert!(notch.launch_at_startup);
       assert!(notch.upcoming_event);
       assert!(!notch.no_calendars);
+      assert!(notch.compact_bar);
       assert_eq!(notch.shortcut, "Alt Alt");
     }
 
@@ -373,6 +381,7 @@ mod settings {
       assert!(notch.alt_alt);
       assert!(notch.hide_in_fullscreen);
       assert!(notch.launch_at_startup);
+      assert!(notch.compact_bar);
       assert_eq!(notch.shortcut, "Ctrl + Shift + Space");
     }
 
@@ -393,6 +402,7 @@ mod settings {
       assert!(notch.launch_at_startup);
       assert!(notch.upcoming_event);
       assert!(!notch.no_calendars);
+      assert!(notch.compact_bar);
       assert_eq!(notch.shortcut, "Alt Alt");
     }
 
@@ -459,12 +469,20 @@ mod settings {
       assert!(notch.launch_at_startup);
       assert!(notch.upcoming_event);
       assert!(!notch.no_calendars);
+      assert!(notch.compact_bar);
       assert_eq!(notch.shortcut, "Alt Alt");
     }
   }
 }
 
 use settings::AppSettings;
+
+/// True while a fullscreen app is in front; the compact bar hides when the
+/// `hideInFullscreen` setting is on.
+#[tauri::command]
+fn fullscreen_active() -> bool {
+  triggers::foreground_fullscreen_active()
+}
 
 #[tauri::command]
 async fn settings_get(handle: tauri::AppHandle) -> Result<AppSettings, String> {

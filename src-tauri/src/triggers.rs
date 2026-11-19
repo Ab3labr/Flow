@@ -143,6 +143,17 @@ pub fn suppressed(mouse_down: bool, foreground_fullscreen: bool, hide_in_fullscr
   mouse_down || (hide_in_fullscreen && foreground_fullscreen)
 }
 
+/// Exposed to the frontend so the compact bar can hide under fullscreen apps.
+#[cfg(target_os = "windows")]
+pub fn foreground_fullscreen_active() -> bool {
+  imp::foreground_fullscreen()
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn foreground_fullscreen_active() -> bool {
+  false
+}
+
 #[cfg(target_os = "windows")]
 mod imp {
   use super::{in_hot_zone, suppressed, DwellTracker, DWELL_MS};
@@ -218,7 +229,7 @@ mod imp {
   /// True only when the foreground window covers its whole monitor (not the
   /// work area) and is not the desktop/shell. A maximized window matches the
   /// work area, so it does not count.
-  fn foreground_fullscreen() -> bool {
+  pub(super) fn foreground_fullscreen() -> bool {
     unsafe {
       let hwnd: HWND = GetForegroundWindow();
       if hwnd.0.is_null() {

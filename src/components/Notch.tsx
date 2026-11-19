@@ -15,11 +15,21 @@ import {
 import { isMockMode, isTauriApp } from "../services/env";
 import {
   focusNotchWindow,
+  isFullscreenAppActive,
   onCloseRequest,
   onOpenRequest,
   setUiMode,
   type UiMode,
 } from "../services/uiService";
+import {
+  COMPACT_BAR_HEIGHT,
+  COMPACT_BAR_MAX_WIDTH,
+  COMPACT_BAR_MIN_WIDTH,
+  CompactBar,
+} from "../live/CompactBar";
+import { LIVE_PRIORITIES } from "../live/priorities";
+import type { LiveActivity } from "../live/types";
+import { useLiveActivities } from "../live/useLiveActivities";
 import { CalendarView } from "./CalendarView";
 import { CaptureView } from "./CaptureView";
 import { EventCard, JoinButton } from "./EventCard";
@@ -38,9 +48,7 @@ const baseHeights: Record<Exclude<TabId, "notes">, number> = {
 };
 
 const isTabId = (value: string): value is TabId =>
-  (["home", "timer", "calendar", "notes", "capture", "settings"] as const).includes(
-    value as TabId,
-  );
+  (["home", "timer", "calendar", "notes", "capture", "settings"] as const).includes(value as TabId);
 
 /** Real tracks may have an unknown duration (`durationMs: null`). */
 function trackSeconds(track: Track): number {
@@ -130,6 +138,12 @@ export function Notch() {
   const settingsRef = useRef<NotchSettings>(DEFAULT_NOTCH_SETTINGS);
   const settingsSaveSequence = useRef(0);
   const track = isMockMode ? mockTracks[trackIndex] : realTrack;
+  const { top: topActivity, register, update, remove } = useLiveActivities();
+  const [barWidth, setBarWidth] = useState(COMPACT_BAR_MIN_WIDTH);
+  const [fullscreenActive, setFullscreenActive] = useState(false);
+  const musicRegistered = useRef(false);
+  const musicRemoveTimer = useRef<number | undefined>(undefined);
+  const wasCompact = useRef(false);
   const visibleAccounts = settings.noCalendars ? [] : accounts;
   const events = useMemo(
     () => calendarService.getToday(visibleAccounts),
@@ -137,8 +151,34 @@ export function Notch() {
   );
   const upcomingEvent = settings.upcomingEvent ? events[0] : undefined;
   const livePill = recording || timerComplete || Boolean(reminderEvent);
+  const musicActivity = useMemo<LiveActivity | null>(() => {
+    if (!track) return null;
+    return {
+      id: "music",
+      kind: "music",
+      priority: LIVE_PRIORITIES.music,
+      leading: track.artDataUrl
+        ? { type: "image", url: track.artDataUrl }
+        : {
+            type: "initial",
+            text: track.source.trim().charAt(0).toUpperCase() || "?",
+            colors: track.colors,
+          },
+      label: track.title,
+      trailing: "equalizer",
+      playing,
+      expandTab: "home",
+    };
+  }, [track, playing]);
+  const compact = Boolean(
+    settings.compactBar &&
+    !expanded &&
+    !livePill &&
+    topActivity &&
+    !(settings.hideInFullscreen && fullscreenActive),
+  );
   const panelHeight = tab === "notes" ? notesHeight : baseHeights[tab];
-  const uiMode: UiMode = expanded ? "open" : livePill ? "pill" : "idle";
+  const uiMode: UiMode = expanded ? "open" : livePill || compact ? "pill" : "idle";
 
   useEffect(() => {
     expandedRef.current = expanded;
@@ -207,16 +247,76 @@ export function Notch() {
     });
   }, []);
 
+  // Music activity: present while playing; a pause keeps it (flat bars) for
+  // 3 s so the bar does not flicker during a quick resume.
+  useEffect(() => {
+    window.clearTimeout(musicRemoveTimer.current);
+    musicRemoveTimer.current = undefined;
+    if (!musicActivity) {
+      if (musicRegistered.current) remove("music");
+      musicRegistered.current = false;
+      return;
+    }
+    if (musicActivity.playing) {
+      register(musicActivity);
+      musicRegistered.current = true;
+      return;
+    }
+    if (!musicRegistered.current) return;
+    update("music", { ...musicActivity, playing: false });
+    musicRemoveTimer.current = window.setTimeout(() => {
+      remove("music");
+      musicRegistered.current = false;
+    }, 3000);
+  }, [musicActivity, register, remove, update]);
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(musicRemoveTimer.current);
+      remove("music");
+    },
+    [remove],
+  );
+
+  useEffect(() => {
+    wasCompact.current = compact;
+  }, [compact]);
+
+  // Fullscreen suppression mirrors the Rust hover trigger.
+  useEffect(() => {
+    if (!isTauriApp || !settings.compactBar || !settings.hideInFullscreen || expanded) {
+      setFullscreenActive(false);
+      return;
+    }
+    let cancelled = false;
+    const check = () => {
+      void isFullscreenAppActive().then((active) => {
+        if (!cancelled) setFullscreenActive(active);
+      });
+    };
+    check();
+    const id = window.setInterval(check, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [settings.compactBar, settings.hideInFullscreen, expanded]);
+
   // Report the window model to Rust. Open/pill resizes apply before Motion
   // expands; idle is only sent after the close animation has finished.
   useEffect(() => {
+    const pillWidth = compact ? barWidth : 108;
+    const pillHeight = compact ? COMPACT_BAR_HEIGHT : 26;
     if (uiMode !== "idle") {
-      setUiMode(uiMode, panelHeight, pinned);
+      setUiMode(uiMode, panelHeight, pinned, pillWidth, pillHeight);
       return;
     }
-    const id = window.setTimeout(() => setUiMode("idle", panelHeight, false), 250);
+    const id = window.setTimeout(
+      () => setUiMode("idle", panelHeight, false, pillWidth, pillHeight),
+      250,
+    );
     return () => window.clearTimeout(id);
-  }, [uiMode, panelHeight, pinned]);
+  }, [uiMode, panelHeight, pinned, compact, barWidth]);
 
   useEffect(() => {
     let disposed = false;
@@ -274,9 +374,7 @@ export function Notch() {
     const id = window.setInterval(() => {
       setProgress((current) => {
         if (duration > 0 && current + 0.1 >= duration) {
-          setTrackIndex((index) =>
-            mockTracks.length ? (index + 1) % mockTracks.length : 0,
-          );
+          setTrackIndex((index) => (mockTracks.length ? (index + 1) % mockTracks.length : 0));
           return 0;
         }
         return current + 0.1;
@@ -421,8 +519,26 @@ export function Notch() {
     window.clearTimeout(leaveTimer.current);
     window.clearTimeout(hoverTimer.current);
     if (reminderEvent) window.clearTimeout(reminderTimer.current);
+    if (compact && !expanded) {
+      // Hover on the compact bar always lands on Home, unpinned.
+      setTab("home");
+      setExpanded(true);
+      return;
+    }
     if (livePill && !expanded) setExpanded(true);
   };
+
+  const openPinnedFromBar = () => {
+    window.clearTimeout(hoverTimer.current);
+    window.clearTimeout(leaveTimer.current);
+    setTab(topActivity?.expandTab ?? "home");
+    setPinned(true);
+    setExpanded(true);
+  };
+
+  const handleBarWidth = useCallback((width: number) => {
+    setBarWidth(Math.max(COMPACT_BAR_MIN_WIDTH, Math.min(COMPACT_BAR_MAX_WIDTH, width)));
+  }, []);
 
   const leaveTarget = () => {
     window.clearTimeout(hoverTimer.current);
@@ -628,22 +744,24 @@ export function Notch() {
         ref={panelRef}
         role={expanded ? "dialog" : undefined}
         aria-label={expanded ? "Windows notch utility" : undefined}
-        className={`absolute left-1/2 top-0 -translate-x-1/2 overflow-hidden bg-black ${
-          expanded || livePill ? "pointer-events-auto" : "pointer-events-none"
-        } ${expanded || livePill ? "shadow-[0_12px_34px_rgba(0,0,0,.36)]" : ""}`}
+        className={`absolute left-1/2 top-0 -translate-x-1/2 bg-black ${
+          compact ? "overflow-visible" : "overflow-hidden"
+        } ${expanded || livePill || compact ? "pointer-events-auto" : "pointer-events-none"} ${
+          expanded || livePill || compact ? "shadow-[0_12px_34px_rgba(0,0,0,.36)]" : ""
+        }`}
         onPointerEnter={enterPanel}
         onPointerLeave={leaveTarget}
         animate={{
-          width: expanded ? 480 : livePill ? 108 : 120,
-          height: expanded ? panelHeight : livePill ? 26 : 4,
-          opacity: expanded || livePill ? 1 : 0,
-          borderBottomLeftRadius: expanded ? 22 : livePill ? 13 : 2,
-          borderBottomRightRadius: expanded ? 22 : livePill ? 13 : 2,
+          width: expanded ? 480 : compact ? barWidth : livePill ? 108 : 120,
+          height: expanded ? panelHeight : compact ? COMPACT_BAR_HEIGHT : livePill ? 26 : 4,
+          opacity: expanded || livePill || compact ? 1 : 0,
+          borderBottomLeftRadius: expanded ? 22 : compact ? 15 : livePill ? 13 : 2,
+          borderBottomRightRadius: expanded ? 22 : compact ? 15 : livePill ? 13 : 2,
         }}
         transition={
           reducedMotion
             ? { duration: 0.15 }
-            : expanded
+            : expanded || compact || (wasCompact.current && !livePill)
               ? { type: "spring", stiffness: 380, damping: 30, mass: 0.9 }
               : {
                   height: { delay: 0.1, duration: 0.22 },
@@ -729,6 +847,29 @@ export function Notch() {
                   <JoinButton provider={reminderProvider} compact />
                 </>
               ) : null}
+            </motion.div>
+          ) : compact && topActivity ? (
+            <motion.div
+              key="compact"
+              className="h-[30px]"
+              initial={{ opacity: 0, filter: "blur(6px)" }}
+              animate={{ opacity: 1, filter: "blur(0px)" }}
+              exit={{
+                opacity: 0,
+                filter: "blur(6px)",
+                transition: { duration: reducedMotion ? 0.15 : 0.16 },
+              }}
+              transition={{
+                delay: reducedMotion ? 0 : 0.08,
+                duration: reducedMotion ? 0.15 : 0.22,
+                ease: [0.22, 1, 0.36, 1],
+              }}
+            >
+              <CompactBar
+                activity={topActivity}
+                onWidthChange={handleBarWidth}
+                onClick={openPinnedFromBar}
+              />
             </motion.div>
           ) : null}
         </AnimatePresence>

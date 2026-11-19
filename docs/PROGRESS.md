@@ -60,6 +60,20 @@ not started / in progress / done / blocked
 - [ ] System volume (IAudioEndpointVolume) — dropped from the UI
 - [x] Idle home state when no session
 
+### Phase 3D — Compact live bar
+- [x] Reusable `src/live` system: `LiveActivity` slots, priority picker
+      (recording 100 / timer done 90 / meeting 80 / music 10), external store
+      with register/update/remove, one `CompactBar` renderer
+- [x] Music activity while playing; paused keeps flat bars for 3 s then
+      removes; no session means no activity
+- [x] Bar look/motion: 30 high, 150-260 wide, radius 15, dominant-colour glow,
+      spring from the sliver, 6 px blur fade, 260 ms title crossfade,
+      150 ms reduced-motion fades
+- [x] Hover -> Home unpinned, click -> pinned, close while playing -> bar;
+      fullscreen suppression; `compactBar` setting applies live
+- [x] `set_ui_mode` pill takes frontend bar size: (width + 32) x (height + 18)
+- [ ] Migrate recording/timer/reminder pills onto the same system (later)
+
 ### Phase 4 — Timer (Rust-authoritative)
 - [ ] end-timestamp state machine, commands, `timer-state` events
 - [ ] Toast + sound on finish; live pill integration
@@ -141,6 +155,25 @@ Tauri 2 shell scaffolded:
 - Settings file creation/load/save implemented (atomic temp+rename), stores NotchSettings, notesFolder, calendarAccounts, timerCustomTimes
 - Commands: settings_get, settings_set
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
+
+## Last session (Phase 3D — compact live bar)
+Phase 3D adds a reusable activity system in `src/live`: typed activity slots,
+a priority picker, an external register/update/remove store, and one
+`CompactBar` that renders any activity. Only music is registered for now
+(recording/timer/reminder keep their existing pills). The music bar appears
+while the shown session plays, stays for 3 s with flat bars after a pause, and
+returns whenever the panel closes. Leading is 20x20 art (or the app initial on
+the track gradient); the label is the title; the trailing 3-bar equalizer and a
+28% glow use the art's dominant colour (fallback `#f09ab7`).
+
+The bar is 30 high and 150-260 wide, bottom radius 15, flush to the top edge.
+It springs from the 120x4 sliver (380/30/0.9), content fades from 6 px blur,
+titles crossfade with a 5 px slide (260 ms), and reduced motion uses 150 ms
+fades. Hover opens Home unpinned, click opens pinned, and fullscreen apps hide
+the bar when `hideInFullscreen` is on. Rust pill mode now takes the real bar
+size: `(barWidth + 32) x (barHeight + 18)` logical, centered, input accepted;
+idle stays hidden and click-through. `compactBar` defaults true in Rust and
+TypeScript and is exposed as "Compact music bar" in Settings.
 
 ## Last session (Phase 3C part 2 — late album art, skip icons, transport-only real card)
 Art is now cached by title + artist + album. A missing cover is never final:
@@ -474,3 +507,4 @@ Half-done / follow-ups:
 - Music 3B: position corrected from `LastUpdatedTime` + `PlaybackRate` (seek resync >1.5 s), stable sticky session choice, `media_toggle/next/prev/seek` over an mpsc channel with 2 s timeout + 150 ms fast polling; frontend transport/scrubber wired.
 - Music 3C.1: pure class/priority chooser (music > other > browser, earliest playing, current-session tie-break, paused fallback) with history keyed by AUMID (+index), floored clock labels, 5 s `FLOAT_DEBUG` diagnostics, and commands sent only to the stored displayed session object.
 - Music 3C.2: album art keyed by title+artist+album with 1 s/15 s late-arrival retries and `image` downscaling (≤256 px JPEG q85 over 400 KB), `SkipBack`/`SkipForward` icons, real card limited to centered transport (volume/lyrics/menu dropped from the UI).
+- Live 3D: reusable `src/live` activity slots + priority picker/store, music compact bar (30 px, 150–260 wide, art/initial leading, dominant-colour equalizer + 28% glow, 3 s paused hold), hover/click/close behavior, fullscreen suppression, `compactBar` setting, and frontend-sized pill geometry `(barWidth + 32) x (barHeight + 18)` with Node unit tests for `pickActivity`.

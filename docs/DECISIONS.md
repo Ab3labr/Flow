@@ -25,6 +25,8 @@ Backend
 Frontend
 - @fontsource-variable/inter: bundle Inter locally (no remote font import,
   CSP-safe, works offline)
+- Front-end unit tests use Node's built-in `node:test` + type stripping
+  (`pnpm test`); no extra test-runner dependency.
 
 Phase 1
 - @tauri-apps/api ^2.12.5: Tauri 2 frontend bindings
