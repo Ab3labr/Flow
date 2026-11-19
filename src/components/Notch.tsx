@@ -10,8 +10,9 @@ import {
   mediaService,
   settingsService,
   type NotchSettings,
+  type Track,
 } from "../services";
-import { isTauriApp } from "../services/env";
+import { isMockMode, isTauriApp } from "../services/env";
 import {
   focusNotchWindow,
   onCloseRequest,
@@ -40,6 +41,14 @@ const isTabId = (value: string): value is TabId =>
   (["home", "timer", "calendar", "notes", "capture", "settings"] as const).includes(
     value as TabId,
   );
+
+/** Real tracks may have an unknown duration (`durationMs: null`). */
+function trackSeconds(track: Track): number {
+  if (track.durationMs !== undefined) {
+    return track.durationMs == null ? 0 : track.durationMs / 1000;
+  }
+  return track.duration;
+}
 
 function IdleHome({
   onTimer,
@@ -91,9 +100,12 @@ export function Notch() {
   const [expanded, setExpanded] = useState(false);
   const [pinned, setPinned] = useState(false);
   const [tab, setTab] = useState<TabId>("home");
+  const mockTracks = useMemo(() => (isMockMode ? mediaService.getTracks() : []), []);
   const [trackIndex, setTrackIndex] = useState(0);
   const [playing, setPlaying] = useState(true);
   const [progress, setProgress] = useState(108);
+  const [realTrack, setRealTrack] = useState<Track | null>(null);
+  const [mediaReady, setMediaReady] = useState(isMockMode);
   const [volume, setVolume] = useState(68);
   const [timerTotal, setTimerTotal] = useState(300);
   const [timerRemaining, setTimerRemaining] = useState(300);
@@ -116,8 +128,7 @@ export function Notch() {
   const expandedRef = useRef(false);
   const settingsRef = useRef<NotchSettings>(DEFAULT_NOTCH_SETTINGS);
   const settingsSaveSequence = useRef(0);
-  const tracks = mediaService.getTracks();
-  const track = tracks[trackIndex];
+  const track = isMockMode ? mockTracks[trackIndex] : realTrack;
   const visibleAccounts = settings.noCalendars ? [] : accounts;
   const events = useMemo(
     () => calendarService.getToday(visibleAccounts),
@@ -146,6 +157,38 @@ export function Notch() {
       });
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  // Real now-playing: `media-state` (state changes only) + the initial
+  // `media_snapshot`. Null is the idle home; no fake tracks in real mode.
+  useEffect(() => {
+    if (isMockMode) return;
+    let disposed = false;
+    let unsubscribe: (() => void) | undefined;
+
+    const apply = (next: Track | null) => {
+      if (disposed) return;
+      setRealTrack(next);
+      setPlaying(next?.playing ?? false);
+      setProgress(next?.positionMs != null ? next.positionMs / 1000 : 0);
+      setMediaReady(true);
+    };
+
+    void mediaService
+      .subscribe(apply)
+      .then((stop) => {
+        if (disposed) stop();
+        else unsubscribe = stop;
+      })
+      .catch((error) => {
+        console.error("media subscribe failed", error);
+        if (!disposed) setMediaReady(true);
+      });
+
+    return () => {
+      disposed = true;
+      unsubscribe?.();
     };
   }, []);
 
@@ -223,19 +266,37 @@ export function Notch() {
     };
   }, [close]);
 
+  // Mock playback advances locally (browser prototype).
   useEffect(() => {
-    if (!playing) return;
+    if (!isMockMode || !playing || !track) return;
+    const duration = trackSeconds(track);
     const id = window.setInterval(() => {
       setProgress((current) => {
-        if (current + 0.1 >= track.duration) {
-          setTrackIndex((index) => (index + 1) % tracks.length);
+        if (duration > 0 && current + 0.1 >= duration) {
+          setTrackIndex((index) =>
+            mockTracks.length ? (index + 1) % mockTracks.length : 0,
+          );
           return 0;
         }
         return current + 0.1;
       });
     }, 100);
     return () => window.clearInterval(id);
-  }, [playing, track.duration, tracks.length]);
+  }, [playing, track, mockTracks.length]);
+
+  // Real playback: interpolate from the last state change (positionMs is only
+  // sent when the track/status changes, not on every poll tick).
+  useEffect(() => {
+    if (isMockMode || !realTrack?.playing) return;
+    const base = realTrack.positionMs ?? 0;
+    const capturedAt = realTrack.capturedAtMs ?? Date.now();
+    const duration = trackSeconds(realTrack);
+    const id = window.setInterval(() => {
+      const next = (base + (Date.now() - capturedAt)) / 1000;
+      setProgress(duration > 0 ? Math.min(next, duration) : next);
+    }, 100);
+    return () => window.clearInterval(id);
+  }, [realTrack]);
 
   useEffect(() => {
     if (!timerRunning) return;
@@ -371,7 +432,8 @@ export function Notch() {
   };
 
   const skip = (direction: number) => {
-    setTrackIndex((index) => (index + direction + tracks.length) % tracks.length);
+    if (!isMockMode || mockTracks.length === 0) return;
+    setTrackIndex((index) => (index + direction + mockTracks.length) % mockTracks.length);
     setProgress(0);
   };
 
@@ -416,42 +478,44 @@ export function Notch() {
     );
   };
 
-  const home =
-    !playing && !upcomingEvent ? (
-      <IdleHome
-        onTimer={() => setTab("timer")}
-        onNote={openNewNote}
-        onSnip={() => setTab("capture")}
-      />
-    ) : (
-      <motion.div layout className="flex h-[120px] gap-2 px-1">
+  const showIdleHome = isMockMode ? !playing && !upcomingEvent : !mediaReady || !realTrack;
+
+  const home = showIdleHome ? (
+    <IdleHome
+      onTimer={() => setTab("timer")}
+      onNote={openNewNote}
+      onSnip={() => setTab("capture")}
+    />
+  ) : (
+    <motion.div layout className="flex h-[120px] gap-2 px-1">
+      {track && (
         <MusicCard
           track={track}
-          trackIndex={trackIndex}
           playing={playing}
           progress={progress}
           volume={volume}
-          onPlayingChange={setPlaying}
+          onPlayingChange={isMockMode ? setPlaying : () => {}}
           onSkip={skip}
-          onScrub={setProgress}
+          onScrub={isMockMode ? setProgress : () => {}}
           onVolumeChange={setVolume}
         />
-        <AnimatePresence initial={false}>
-          {upcomingEvent && (
-            <motion.div
-              layout
-              className="overflow-hidden"
-              initial={{ opacity: 0, width: 0, filter: "blur(5px)" }}
-              animate={{ opacity: 1, width: 148, filter: "blur(0px)" }}
-              exit={{ opacity: 0, width: 0, filter: "blur(5px)" }}
-              transition={{ type: "spring", stiffness: 380, damping: 30, mass: 0.9 }}
-            >
-              <EventCard event={upcomingEvent} eventCount={events.length} />
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </motion.div>
-    );
+      )}
+      <AnimatePresence initial={false}>
+        {upcomingEvent && (
+          <motion.div
+            layout
+            className="overflow-hidden"
+            initial={{ opacity: 0, width: 0, filter: "blur(5px)" }}
+            animate={{ opacity: 1, width: 148, filter: "blur(0px)" }}
+            exit={{ opacity: 0, width: 0, filter: "blur(5px)" }}
+            transition={{ type: "spring", stiffness: 380, damping: 30, mass: 0.9 }}
+          >
+            <EventCard event={upcomingEvent} eventCount={events.length} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
 
   const content: Record<TabId, React.ReactNode> = {
     home,

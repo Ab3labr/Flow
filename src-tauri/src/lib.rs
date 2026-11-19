@@ -2,6 +2,7 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager};
 
+mod music;
 mod triggers;
 mod window_mode;
 
@@ -11,6 +12,7 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       settings_get,
       settings_set,
+      music::media_snapshot,
       window_mode::set_ui_mode
     ])
     .setup(|app| {
@@ -102,6 +104,11 @@ pub fn run() {
       // Seed the live settings before any trigger thread starts.
       settings::ensure_settings_file(app.handle());
       settings::init(app.handle());
+
+      // SMTC snapshot: one MTA thread, cached for `media_snapshot`, emitted as
+      // `media-state` only when the track/status changes.
+      app.manage(std::sync::Arc::new(music::MediaState::default()));
+      music::start(app.handle().clone());
 
       #[cfg(target_os = "windows")]
       {

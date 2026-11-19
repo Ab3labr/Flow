@@ -31,24 +31,27 @@ not started / in progress / done / blocked
       scale), 180 ms dwell, mouse-button + fullscreen suppression (shell
       classes excluded), emits `open-request {source:"hover"}` only while the
       panel is idle
-- [x] WH_KEYBOARD_LL hook thread: double-Alt 350 ms (`AltTapTracker`,
-      emits `toggle-request {source:"alt"}`)
+- [x] WH_KEYBOARD_LL hook thread: double-Alt 350 ms (`AltTapTracker`);
+      Rust decides open/close and emits `open-request`/`close-request`
 - [ ] Custom shortcut parse (JS handler still covers focused-window combos)
 - [ ] Alt menu suppression (inject an unassigned virtual key — see
       DECISIONS.md); testable only after the hook is verified without it
 - [x] Pure functions + `cargo test` (dwell, alt-tap)
-- [x] Frontend consumes `open-request`/`toggle-request` events
+- [x] Frontend consumes `open-request`/`close-request` events
 - [x] Settings live via `RwLock` shared state (`settings_set` applies with no
       restart), suppression-reason logging ≤1/s, `settingsVersion` migration
 - [x] Rust-owned panel state: double-Alt open/close decision, Esc close,
       outside-click close while pinned (`close-request`), tracker reset
 
 ### Phase 3 — Music (SMTC)
-- [ ] Now playing snapshot + events (session/props/playback/timeline)
-- [ ] Art → data URL + sampled colors; duration null handling
-- [ ] Transport commands + seek; position interpolation in UI
-- [ ] Source label map; system volume (IAudioEndpointVolume)
-- [ ] Idle home state when no session
+- [x] Now playing snapshot + events (session/props/playback/timeline)
+- [x] Art → data URL (cached by title+artist, ≤1.5 MB); 8x8 canvas glow;
+      duration null handling
+- [ ] Transport commands + seek (Phase 3B; no controls in real mode yet)
+- [x] Position interpolation in UI from `positionMs`/`capturedAtMs`
+- [x] Source label map
+- [ ] System volume (IAudioEndpointVolume)
+- [x] Idle home state when no session
 
 ### Phase 4 — Timer (Rust-authoritative)
 - [ ] end-timestamp state machine, commands, `timer-state` events
@@ -131,6 +134,43 @@ Tauri 2 shell scaffolded:
 - Settings file creation/load/save implemented (atomic temp+rename), stores NotchSettings, notesFolder, calendarAccounts, timerCustomTimes
 - Commands: settings_get, settings_set
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
+
+## Last session (Phase 3A — real now playing)
+Done: `src-tauri/src/music.rs` polls Windows SMTC on one dedicated
+`float-media` thread (`RoInitialize(RO_INIT_MULTITHREADED)`, 500 ms). It picks
+the first `Playing` session from `GetSessions()`, else `GetCurrentSession()`.
+Per session it reads `TryGetMediaPropertiesAsync` (title/artist),
+`SourceAppUserModelId`, `GetPlaybackInfo().PlaybackStatus()` and
+`GetTimelineProperties` (100 ns → ms; duration null when end ≤ start). The
+windows 0.62 blocking wait is `IAsyncOperation::join()` (there is no `.get()`),
+and it never runs off the media thread. Thumbnail bytes go through `DataReader`
+→ local base64 → `data:<mime>;base64,…`, cached by title+artist and skipped
+above 1.5 MB. AUMIDs map to Spotify/Apple Music/Chrome/Edge/Brave/Firefox/Opera,
+else the readable AUMID/exe name.
+
+`media_snapshot` returns the cached payload; `media-state` fires only when
+title, artist, source, playing or duration changes, plus one `null` when the
+session disappears. Position ticks never emit; the UI interpolates from
+`positionMs` + `capturedAtMs`. `FLOAT_DEBUG=1` logs the chosen AUMID and every
+state change. Errors log once (manager/session separately) and polling
+continues.
+
+Frontend: `tauriServices.mediaService` listens first, then calls
+`media_snapshot`, maps payload → `Track` (`artDataUrl`, `playing`,
+`positionMs`, `durationMs`, `capturedAtMs`), dedupes stale snapshots by
+`capturedAtMs`, and returns `null` for no session. `Notch` shows the idle home
+for `null`/before the first snapshot, interpolates position every 100 ms while
+playing, and never falls back to mock songs in the Tauri app. `MusicCard` shows
+the art (gradient fallback), samples an 8×8 canvas average for the glow, hides
+the progress row when `durationMs` is null, and hides the not-yet-wired
+transport/volume controls in real mode.
+
+Half-done / follow-ups:
+- Transport (play/pause/skip/seek) and system volume are Phase 3B; real mode
+  intentionally has no working controls yet.
+- Seeks that don't change title/status don't emit; the next state change or a
+  `media_snapshot` call picks up the new position.
+- Base64 is hand-written to avoid a one-use dependency.
 
 ## Last session (Rust-owned panel open state + three close paths)
 Done: `window_mode::AppState` (managed with `app.manage`) now holds
@@ -345,8 +385,9 @@ Half-done / follow-ups:
 - Settings: real settingsService (settings_get/settings_set), persisted toggles, mock-only demo/lyrics/output controls.
 - Fonts/services: Inter bundled locally, Tauri-only notch render, services split into types/mock/tauri/index.
 - Settings: unified `hideInFullscreen`/`launchAtStartup` names and defaults across Rust/TypeScript.
-- Triggers: Rust WH_KEYBOARD_LL double-Alt hook (`toggle-request`), JS sequence Tauri-gated, pure tracker unit-tested.
+- Triggers: Rust WH_KEYBOARD_LL double-Alt hook, JS sequence Tauri-gated, pure tracker unit-tested.
 - Triggers: physical-px `in_hot_zone` + new `DwellTracker`, closed-only `open-request {source:"hover"}`, unpinned hover open.
 - Settings: single-value `Toggle` (white/black on, #303030/#9a9a9a off), four toggles default true, serde defaults for partial settings.json.
 - Settings: `settingsVersion` 2 migration, live `RwLock` state for both triggers, suppression-reason logs, redesigned toggle (white/#000 on, #2a2a2a/#8a8a8a off, dimmed label, focus ring), optimistic save + revert.
 - Panel state: `AppState` open/pinned/rect, double-Alt decides open/close in Rust, Esc + outside-click `close-request`, Alt tracker reset on open/close.
+- Music 3A: `music.rs` SMTC poll thread (MTA, 500 ms), cached `media_snapshot`, state-only `media-state`, base64 art + AUMID source labels; real mediaService + interpolated progress + art glow; no fake songs in Tauri mode.

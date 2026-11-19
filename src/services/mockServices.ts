@@ -90,6 +90,10 @@ const rawEvents = [
 
 export const mediaService = {
   getTracks: () => tracks,
+  /** The browser prototype drives tracks locally; there is no real session. */
+  getSnapshot: async (): Promise<Track | null> => null,
+  subscribe: async (_handler: (track: Track | null) => void): Promise<() => void> =>
+    () => {},
 };
 
 export const calendarService = {

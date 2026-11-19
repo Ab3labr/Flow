@@ -61,7 +61,7 @@ src/services/
                     Note, NotchSettings)
   index.ts          exports mock or tauri impl by VITE_USE_MOCK
   mockServices.ts   mock data + localStorage impl
-  tauriServices.ts  invoke()/listen() wrappers — settingsService only today
+  tauriServices.ts  invoke()/listen() wrappers — settings + now playing
 ```
 `settingsService` is real (NotchSettings + notesFolder + calendar account
 metadata via `settings_get`/`settings_set`; unrelated fields preserved).
@@ -153,6 +153,28 @@ Rust owns `panel_open` / `panel_pinned` / panel rect (`AppState`), updated by
   pending; verify on PC with Alt+Tab, Alt+F4, Alt+Space.
 - Unit tests: `cargo test` on pure trackers/parser/rects.
 
+### Music / now playing (Phase 3A)
+One dedicated `float-media` thread calls `RoInitialize(RO_INIT_MULTITHREADED)`
+once, then polls SMTC every 500 ms:
+`GlobalSystemMediaTransportControlsSessionManager::RequestAsync()` (kept for
+the thread's lifetime), first session whose playback status is `Playing`, else
+`GetCurrentSession()`. Per session: media properties (title/artist), app AUMID,
+playback status, timeline (`TimeSpan` is 100 ns → `/10_000` ms; duration null
+when end ≤ start). Thumbnail bytes are read through `DataReader` and cached by
+title+artist; >1.5 MB is skipped. Art becomes a `data:<content-type>;base64,…`
+URL; a tiny local base64 encoder avoids a dependency. The windows 0.62
+blocking wait is `IAsyncOperation::join()` (not `.get()`), and it only ever
+runs on this thread.
+
+`media_snapshot` returns the cached `{title, artist, source, playing,
+positionMs, durationMs, artDataUrl, capturedAtMs}` (or null). `media-state` is
+emitted only when title, artist, source, playing or duration changes, plus one
+`null` when the session disappears. Position is omitted from change detection;
+the UI interpolates from `positionMs + (now - capturedAtMs)` while playing.
+The app AUMID is mapped to Spotify / Apple Music / Chrome / Edge / Brave /
+Firefox / Opera, otherwise to the readable AUMID/exe name. `FLOAT_DEBUG=1`
+logs the chosen AUMID and every state change.
+
 ### Persistence
 `%APPDATA%\Float\settings.json` via `app.path().app_config_dir()`:
 `NotchSettings` fields, `notesFolder`, `calendarAccounts` metadata
@@ -160,8 +182,8 @@ Rust owns `panel_open` / `panel_pinned` / panel rect (`AppState`), updated by
 `timerCustomTimes`, OAuth account list. Atomic write (temp+rename).
 
 ### Services → Rust commands (planned)
-- media: `media_snapshot`, `media_transport(action)`, `media_seek(ms)`,
-  `media_volume_get/set`; event `media-state`.
+- media: `media_snapshot` (done), `media_transport(action)`, `media_seek(ms)`,
+  `media_volume_get/set`; event `media-state` (done).
 - timer: `timer_set/pause/resume/add/get`; event `timer-state`;
   expiry → toast + `timer-done`.
 - notes: `notes_list/get/create/save/remove/open_folder`; event

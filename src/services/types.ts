@@ -2,9 +2,15 @@ export type Track = {
   id: string;
   title: string;
   artist: string;
-  source: "Spotify" | "YouTube" | "Apple Music";
+  source: string;
   duration: number;
   colors: [string, string, string];
+  /** Real SMTC fields (absent on mock tracks). */
+  artDataUrl?: string | null;
+  playing?: boolean;
+  positionMs?: number;
+  durationMs?: number | null;
+  capturedAtMs?: number;
 };
 
 export type CalendarEvent = {
