@@ -32,7 +32,7 @@ implementation needs.
 | Prototype | Real |
 |---|---|
 | `timerRemaining`/`timerRunning`/`timerComplete` in Notch state, 1 s interval | Rust authoritative: `end_instant`, commands set/pause/resume/add, `timer-state` events; survives hidden webview |
-| Complete → 3 s pill only | Rust toast notification + sound, `timer-done` event → pill (Rust ensures window visible for pill) |
+| Complete → 5 s `timer-done` compact activity | Rust toast notification + sound, `timer-done` event → transient compact activity (Rust ensures the window is visible) |
 | Presets/custom/+1 min local state | Same UI; state via commands; custom times persist in settings.json |
 | Ring progress local | From service `remaining/total` |
 
@@ -60,7 +60,7 @@ implementation needs.
 | `live` flag on one mock event | `startsAt <= now < endsAt` |
 | Meeting detect: Meet/Zoom/Teams only | Add Webex (webex.com and subdomains); extract first matching URL → `meetingUrl` |
 | Join inert | `open` crate / opener plugin → default browser |
-| Reminder: JS effect finds event ≤5 min, 900 ms delay, 6 s pill | Rust scheduler (~30 s tick): event with link starting ≤5 min → toast + `meeting-reminder` event → pill w/ Join |
+| Reminder: JS effect finds event ≤5 min, 900 ms delay, 6 s meeting activity | Rust scheduler (~30 s tick): event with link starting ≤5 min → toast + `meeting-reminder` event → transient compact activity w/ Join |
 | "Demo:" toggles | REMOVED from real build; kept in mock mode only (per owner decision). |
 | Events don't refresh with time | Periodic refresh + on-open refresh + `calendar-changed` events |
 | `accountCount` stale in sheet | Pass live count or compute at connect time |
@@ -72,8 +72,8 @@ implementation needs.
 |---|---|
 | Snip button inert | Phase 7a: `ms-screenclip:` URI; later custom overlay → PNG to `Pictures\Float Screenshots` + clipboard + toast |
 | Record = local bool + 1 s counter | Windows Graphics Capture (`windows-capture` crate) → H.264 MP4 in `Videos\Float Recordings`; ffmpeg sidecar fallback; start on primary monitor |
-| Elapsed in Notch state | Rust owns recording; `recording-state` events → pill + Capture tab |
-| Stop from Capture tab only | Also stop from pill (per owner decision: small stop button appears on pill hover; clicking the rest of the pill still expands the panel). |
+| Elapsed in Notch state | Rust owns recording; `recording-state` events → compact activity + Capture tab |
+| Stop from bar hover or Capture tab | Keep the hover-only stop button; clicking the rest of the compact bar opens Capture (per owner decision). |
 | Float window captured | `SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)` |
 | No audio | Stretch goal, skip |
 

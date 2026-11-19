@@ -3,6 +3,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager};
 
 mod music;
+mod power;
 mod triggers;
 mod window_mode;
 
@@ -63,6 +64,7 @@ pub fn run() {
           &window,
           state.inner(),
           window_mode::UiMode::Idle,
+          window_mode::UiPhase::Stable,
           0.0,
           0.0,
           0.0,
@@ -117,6 +119,9 @@ pub fn run() {
       app.manage(std::sync::Arc::new(music::MediaState::default()));
       music::start(app.handle().clone());
 
+      // AC/battery changes are emitted as `power-state`; startup is silent.
+      power::start(app.handle().clone());
+
       #[cfg(target_os = "windows")]
       {
         let handle = app.handle().clone();
@@ -170,6 +175,14 @@ mod settings {
     pub no_calendars: bool,
     #[serde(default = "default_true")]
     pub compact_bar: bool,
+    #[serde(default = "default_true")]
+    pub compact_music: bool,
+    #[serde(default = "default_true")]
+    pub compact_timer: bool,
+    #[serde(default = "default_true")]
+    pub compact_recording: bool,
+    #[serde(default = "default_true")]
+    pub compact_charging: bool,
     #[serde(default = "default_shortcut")]
     pub shortcut: String,
   }
@@ -186,6 +199,10 @@ mod settings {
         upcoming_event: true,
         no_calendars: false,
         compact_bar: true,
+        compact_music: true,
+        compact_timer: true,
+        compact_recording: true,
+        compact_charging: true,
         shortcut: default_shortcut(),
       }
     }
@@ -275,6 +292,10 @@ mod settings {
       "upcomingEvent": true,
       "noCalendars": false,
       "compactBar": true,
+      "compactMusic": true,
+      "compactTimer": true,
+      "compactRecording": true,
+      "compactCharging": true,
       "shortcut": "Alt Alt"
     },
     "notesFolder": null,
@@ -370,6 +391,10 @@ mod settings {
       assert!(notch.upcoming_event);
       assert!(!notch.no_calendars);
       assert!(notch.compact_bar);
+      assert!(notch.compact_music);
+      assert!(notch.compact_timer);
+      assert!(notch.compact_recording);
+      assert!(notch.compact_charging);
       assert_eq!(notch.shortcut, "Alt Alt");
     }
 
@@ -382,6 +407,10 @@ mod settings {
       assert!(notch.hide_in_fullscreen);
       assert!(notch.launch_at_startup);
       assert!(notch.compact_bar);
+      assert!(notch.compact_music);
+      assert!(notch.compact_timer);
+      assert!(notch.compact_recording);
+      assert!(notch.compact_charging);
       assert_eq!(notch.shortcut, "Ctrl + Shift + Space");
     }
 
@@ -403,6 +432,10 @@ mod settings {
       assert!(notch.upcoming_event);
       assert!(!notch.no_calendars);
       assert!(notch.compact_bar);
+      assert!(notch.compact_music);
+      assert!(notch.compact_timer);
+      assert!(notch.compact_recording);
+      assert!(notch.compact_charging);
       assert_eq!(notch.shortcut, "Alt Alt");
     }
 
@@ -470,6 +503,10 @@ mod settings {
       assert!(notch.upcoming_event);
       assert!(!notch.no_calendars);
       assert!(notch.compact_bar);
+      assert!(notch.compact_music);
+      assert!(notch.compact_timer);
+      assert!(notch.compact_recording);
+      assert!(notch.compact_charging);
       assert_eq!(notch.shortcut, "Alt Alt");
     }
   }

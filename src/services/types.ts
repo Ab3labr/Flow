@@ -12,6 +12,19 @@ export type Track = {
   positionMs?: number;
   durationMs?: number | null;
   capturedAtMs?: number;
+  /** Compact-bar gate from Rust; the full panel still shows any media. */
+  isMusicApp: boolean;
+  albumTitle: string | null;
+};
+
+export type PowerTransition = "plugged" | "unplugged" | "none";
+
+/** Rust `power-state` payload. `percent: null` when Windows reports 255. */
+export type PowerState = {
+  pluggedIn: boolean;
+  charging: boolean;
+  percent: number | null;
+  transition: PowerTransition;
 };
 
 export type CalendarEvent = {
@@ -54,6 +67,10 @@ export type NotchSettings = {
   upcomingEvent: boolean;
   noCalendars: boolean;
   compactBar: boolean;
+  compactMusic: boolean;
+  compactTimer: boolean;
+  compactRecording: boolean;
+  compactCharging: boolean;
   shortcut: string;
 };
 
@@ -65,5 +82,9 @@ export const DEFAULT_NOTCH_SETTINGS: NotchSettings = {
   upcomingEvent: true,
   noCalendars: false,
   compactBar: true,
+  compactMusic: true,
+  compactTimer: true,
+  compactRecording: true,
+  compactCharging: true,
   shortcut: "Alt Alt",
 };

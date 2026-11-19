@@ -62,21 +62,52 @@ not started / in progress / done / blocked
 
 ### Phase 3D — Compact live bar
 - [x] Reusable `src/live` system: `LiveActivity` slots, priority picker
-      (recording 100 / timer done 90 / meeting 80 / music 10), external store
-      with register/update/remove, one `CompactBar` renderer
+      (recording 100 / charging 95 / timer done 90 / meeting 80 / timer 60 /
+      music 10), external store with register/update/remove, one `CompactBar`
+      renderer
 - [x] Music activity while playing; paused keeps flat bars for 3 s then
       removes; no session means no activity
-- [x] Bar look/motion: 30 high, 150-260 wide, radius 15, dominant-colour glow,
-      spring from the sliver, 6 px blur fade, 260 ms title crossfade,
-      150 ms reduced-motion fades
+- [x] Compact-bar gate from Rust `isMusicApp` (browser album heuristic);
+      full music card still shows any SMTC session
+- [x] Bar look/motion: 30 high, 120-260 wide, radius 15, dominant-colour glow,
+      one 380/30/0.9 spring for every direction, 6 px blur fade, 260 ms title
+      crossfade, 150 ms reduced-motion fades
 - [x] Hover -> Home unpinned, click -> pinned, close while playing -> bar;
       fullscreen suppression; `compactBar` setting applies live
 - [x] `set_ui_mode` pill takes frontend bar size: (width + 32) x (height + 18)
-- [ ] Migrate recording/timer/reminder pills onto the same system (later)
+- [x] Migrate recording/timer/reminder onto the same system; remove the old
+      pill renderer and branches (Phase 3D-3)
+- [x] Activity contract adds `mode`, `ttlMs`, `hover`, `actions`, `expandTab`,
+      `maxWidth` and optional `render`; transient-first picker + TTL removal
+      with fallback to the best persistent activity
+- [x] Timer Start / Capture Record dissolve the panel into the bar after
+      450 ms when that compact toggle is on; closing with a persistent
+      activity alive returns to the bar
+- [x] "COMPACT BAR" settings: master `compactBar` plus `compactMusic`,
+      `compactTimer`, `compactRecording`, `compactCharging`; all default true
+      in TypeScript and Rust (`#[serde(default = "default_true")]`)
+- [x] Phase 3D-4: Windows `GetSystemPowerStatus` thread (2 s poll), pure
+      transition logic with 1 s hold/no-battery/unknown-value tests, and
+      `power-state` service event
+- [x] Charging compact activity: transient/95/4000 ms, bolt or battery leading
+      icon (red at ≤20%), "Charging"/"Charged"/"Battery", trailing percentage;
+      percent updates refresh without extending the TTL; `compactCharging`
+      applies live
+
+### Phase 3D-5B — Full notch ↔ compact bar transition
+- [x] One visual container: panel and bar are overlapping layers in the same
+      motion.div; no `mode="wait"` blank frame and no idle sliver between them
+- [x] Pure transition planner holds the source geometry while collapsing and
+      grows before expanding; retargeting handles reversed gestures
+- [x] Rust `set_ui_mode` accepts an explicit `expanding`/`collapsing`/`stable`
+      phase, skips duplicate applies, and keeps the morphing window click-through
+- [x] Single final resize per morph after the spring settles; idle shrink/hide
+      and compact width changes follow the same path
+- [x] `pnpm test` expanded to 15 frontend tests; Rust adds phase parsing test
 
 ### Phase 4 — Timer (Rust-authoritative)
 - [ ] end-timestamp state machine, commands, `timer-state` events
-- [ ] Toast + sound on finish; live pill integration
+- [ ] Toast + sound on finish; compact bar integration
 - [ ] Presets/custom/+1 min wired
 
 ### Phase 5 — Notes (markdown files)
@@ -91,13 +122,13 @@ not started / in progress / done / blocked
 - [ ] Microsoft Graph OAuth PKCE + keyring (needs user client ID)
 - [ ] docs/CALENDAR_SETUP.md
 - [ ] Meeting-link detect (incl. Webex) + Join opens URL
-- [ ] 5-min reminder → toast + live pill Join
+- [ ] 5-min reminder → toast + compact bar Join
 - [ ] All design states: none/events/empty/error+reconnect
 
 ### Phase 7 — Capture
 - [ ] Snip via `ms-screenclip:` URI
 - [ ] Record via windows-capture (ffmpeg fallback) → MP4 in
-      `Videos\Float Recordings`; red-dot pill w/ elapsed
+      `Videos\Float Recordings`; recording compact activity w/ elapsed
 - [ ] `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` on our window
 
 ### Phase 8 — Polish & release
@@ -156,24 +187,135 @@ Tauri 2 shell scaffolded:
 - Commands: settings_get, settings_set
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
 
+## Last session (Phase 3D-5B — unified notch/bar transition)
+Root cause: the frontend changed `uiMode` and Rust resized the window to the
+*target* geometry immediately, while Motion was still animating the container
+from the *source* geometry. `AnimatePresence mode="wait"` then unmounted the old
+content before mounting the new content, leaving a blank clipped frame. Resize
+observers also fired repeatedly during the morph, and the old idle branch sent
+a 108x26 fallback that did not match the rendered 120x4 sliver.
+
+The panel and compact bar are now two overlapping layers inside one
+`motion.div`. `AnimatePresence` crossfades them (blur + subtle scale) instead of
+waiting, and the container uses the same 380/30/0.9 spring for width, height and
+corner radius in both directions. The panel layer clips itself so the compact
+bar's glow can still overflow the outer container.
+
+A pure planner (`src/live/windowTransition.ts`) plus
+`src/live/useWindowTransition.ts` now own the explicit morph. Rust receives one
+start plan and one final plan: expanding grows the window before content moves;
+collapsing holds the source geometry until the spring settles; the window is
+click-through during the morph so no large transparent area captures clicks.
+Reversed gestures retarget through the geometry the container was heading
+toward, so no intermediate idle sliver or early resize appears. `set_ui_mode`
+gained a backward-compatible `phase` argument and deduplicates applied geometry,
+so repeated bar-width reports do not cause repeated native resizes.
+
+Verification: `pnpm build`, `pnpm test` (15 passing), `pnpm exec tsc --noEmit`,
+`cargo check`, and `cargo test` (81 passing) all succeed. No activity priorities
+or business rules changed.
+
+## Last session (Phase 3D-4 — charging indicator)
+`src-tauri/src/power.rs` polls `GetSystemPowerStatus` on a dedicated 2 s thread
+using the `Win32_System_Power` windows-crate feature (no new dependency). The
+Win32 read is behind `#[cfg(windows)]`; a no-op `start` keeps non-Windows builds
+compiling. All decisions go through the pure `decide(state, raw, now_ms)`, so
+the 11 unit tests run on any platform. The first usable reading becomes an
+un-emitted baseline; a change to ACLineStatus or battery percent must hold for
+1 s before `power-state` is emitted. Charging-bit-only changes do not emit,
+no-battery/unknown-AC readings emit nothing and reset the baseline, and percent
+255 becomes `null`. The payload is `{pluggedIn, charging, percent,
+transition}` with transition `plugged`/`unplugged`/`none`.
+
+Frontend: `powerService` subscribes to the Tauri event in the service layer;
+mock mode is a no-op. A transition registers a transient `charging` activity
+(priority 95, TTL 4000 ms, `hover: "none"`): green bolt + "Charging"/"Charged"
+when plugged, battery icon + "Battery" when unplugged (red at ≤20%), trailing
+percentage text (`—` when unknown). Percent-only events call `update()` rather
+than `register()`, so they refresh the visible number without restarting the
+TTL. Turning `compactBar` or `compactCharging` off removes the slot immediately.
+`LiveLeading.icon` gained an optional colour and `LiveTrailing` gained a text
+variant to support this without a custom renderer.
+
+Verification: `cargo test` (80 passing), `cargo check`, `pnpm build`, and
+`pnpm exec tsc --noEmit` all pass. `DECISIONS.md` records the feature/justification.
+
+## Last session (Phase 3D-3 — one compact live bar)
+The compact bar is now the only collapsed live surface. `LiveActivity` has
+`mode` (persistent/transient), `ttlMs`, `hover` (expand/actions/none),
+`actions`, `expandTab`, `maxWidth` and an optional `render` override. The
+picker prefers any live transient over every persistent activity, then highest
+priority, then most-recent registration; the store removes expired transients,
+which falls back to the best persistent activity or retracts to the sliver.
+`PickActivity` unit tests cover all four rules plus expiry fallback.
+
+Registered slots: recording (persistent/100, pulsing `#ff453a` dot, `MM:SS`
+or `H:MM:SS`, hover-only stop, otherwise opens Capture), timer
+(persistent/60, 14px ring, `M:SS`, paused dim + pause icon, hover expands
+Timer), timer-done (transient/90/5000 ms, preserved pulse), meeting
+(transient/80/6000 ms, "{title} in 5 min" + compact Join, 900 ms delay and
+same-event-never-re-shows), and music (persistent/10, unchanged 3 s paused
+hold). The bar is content-fit 120–260 wide (timer caps itself at 170) instead
+of a fixed 150 minimum; `CollapsedPill.tsx` and all `livePill` branches are
+gone. Hover only expands for `hover: "expand"`; click opens the activity's
+tab pinned. Timer Start and Capture Record dissolve into the bar after 450 ms
+when their child setting is on; manual close/pause/preset cancels that beat.
+
+Settings now have a "COMPACT BAR" section: master `compactBar` plus indented
+`compactMusic`, `compactTimer`, `compactRecording` and `compactCharging`. They
+apply live and all default to true in both TypeScript and Rust
+(`#[serde(default = "default_true")]`). `FEATURES.md`, `LAYOUT.md`,
+`ARCHITECTURE.md` and `DECISIONS.md` were updated to drop the old pill wording.
+
+Verification: `pnpm build`, `pnpm test` (7 passing), `pnpm exec tsc --noEmit`,
+`cargo check`, and `cargo test` (69 passing) all succeed. Cargo prints only an
+environment warning about garbage-collecting an old incremental directory.
+
+## Last session (dedicated music-app compact bar)
+`media-state` now carries `isMusicApp` and `albumTitle`. `isMusicApp` is true
+for session class 0 (Spotify, Apple Music/iTunes, YouTube Music, Amazon Music,
+Tidal, Deezer); a browser qualifies only when SMTC reports a non-empty album,
+controlled by `BROWSER_ALBUM_HEURISTIC`. With `FLOAT_DEBUG=1` every browser
+decision logs its album title and result. The compact bar registers only for
+those sessions while they play; the 3 s paused hold and the full music card
+are unchanged. Pure classifier tests cover Spotify, Apple Music, Edge with and
+without an album, and VLC.
+
+## Last session (album art type sniffing)
+SMTC `ContentType()` is not trusted for album art any more. The thumbnail's
+leading bytes decide the format: PNG `89 50 4E 47`, JPEG `FF D8 FF`, GIF
+`GIF8`, BMP `BM`, WebP `RIFF…WEBP`. Native PNG/JPEG bytes are embedded with
+their sniffed MIME (oversized art still becomes a 256 px JPEG); GIF/BMP/WebP
+are always re-encoded to a 256 px JPEG; unrecognised bytes are decoded and
+re-encoded as PNG, or dropped when undecodable. The data URL is exactly
+`data:<mime>;base64,<data>`; with `FLOAT_DEBUG=1` its first 40 characters and
+total length are logged. The image crate now enables its `gif`/`bmp`/`webp`
+decoders for this (justified in DECISIONS.md).
+
+Frontend: the music card's album-art `<img>` now has an `onError` handler that
+logs the MIME and data-URL length through the existing `plugin:log|log` command
+(the `log:default` capability was added) and shows the gradient/AudioLines
+placeholder. A new art URL clears the failure. Pure helpers (`sniff_art_format`,
+`reencode_png`, `art_data_url`) are unit-tested.
+
 ## Last session (Phase 3D — compact live bar)
 Phase 3D adds a reusable activity system in `src/live`: typed activity slots,
 a priority picker, an external register/update/remove store, and one
-`CompactBar` that renders any activity. Only music is registered for now
-(recording/timer/reminder keep their existing pills). The music bar appears
+`CompactBar` that renders any activity. Music was the first registered slot
+(recording/timer/reminder moved onto the same bar in Phase 3D-3). The music bar appears
 while the shown session plays, stays for 3 s with flat bars after a pause, and
 returns whenever the panel closes. Leading is 20x20 art (or the app initial on
 the track gradient); the label is the title; the trailing 3-bar equalizer and a
 28% glow use the art's dominant colour (fallback `#f09ab7`).
 
-The bar is 30 high and 150-260 wide, bottom radius 15, flush to the top edge.
+The bar is 30 high and 120-260 wide, bottom radius 15, flush to the top edge.
 It springs from the 120x4 sliver (380/30/0.9), content fades from 6 px blur,
 titles crossfade with a 5 px slide (260 ms), and reduced motion uses 150 ms
 fades. Hover opens Home unpinned, click opens pinned, and fullscreen apps hide
 the bar when `hideInFullscreen` is on. Rust pill mode now takes the real bar
 size: `(barWidth + 32) x (barHeight + 18)` logical, centered, input accepted;
 idle stays hidden and click-through. `compactBar` defaults true in Rust and
-TypeScript and is exposed as "Compact music bar" in Settings.
+TypeScript and is exposed as the master "Show compact bar" toggle in Settings.
 
 ## Last session (Phase 3C part 2 — late album art, skip icons, transport-only real card)
 Art is now cached by title + artist + album. A missing cover is never final:
@@ -508,3 +650,4 @@ Half-done / follow-ups:
 - Music 3C.1: pure class/priority chooser (music > other > browser, earliest playing, current-session tie-break, paused fallback) with history keyed by AUMID (+index), floored clock labels, 5 s `FLOAT_DEBUG` diagnostics, and commands sent only to the stored displayed session object.
 - Music 3C.2: album art keyed by title+artist+album with 1 s/15 s late-arrival retries and `image` downscaling (≤256 px JPEG q85 over 400 KB), `SkipBack`/`SkipForward` icons, real card limited to centered transport (volume/lyrics/menu dropped from the UI).
 - Live 3D: reusable `src/live` activity slots + priority picker/store, music compact bar (30 px, 150–260 wide, art/initial leading, dominant-colour equalizer + 28% glow, 3 s paused hold), hover/click/close behavior, fullscreen suppression, `compactBar` setting, and frontend-sized pill geometry `(barWidth + 32) x (barHeight + 18)` with Node unit tests for `pickActivity`.
+- Album art: magic-byte format sniffing replaces `ContentType()`, non-PNG/JPEG art is re-encoded to a 256 px JPEG (unknown → PNG or null), exact `data:<mime>;base64,<data>` URL plus `FLOAT_DEBUG` head/length log, frontend `<img onError>` logs via `plugin:log|log` and shows the placeholder.

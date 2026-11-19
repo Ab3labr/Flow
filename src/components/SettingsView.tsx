@@ -62,7 +62,15 @@ export function SettingsView({
     { key: "launchAtStartup", label: "Launch at startup" },
     { key: "upcomingEvent", label: "Demo: upcoming event", demo: true },
     { key: "noCalendars", label: "Demo: no calendars connected", demo: true },
-    { key: "compactBar", label: "Compact music bar" },
+  ];
+  const compactRows: {
+    key: "compactMusic" | "compactTimer" | "compactRecording" | "compactCharging";
+    label: string;
+  }[] = [
+    { key: "compactMusic", label: "Music" },
+    { key: "compactTimer", label: "Timer" },
+    { key: "compactRecording", label: "Recording" },
+    { key: "compactCharging", label: "Charging" },
   ];
 
   return (
@@ -120,6 +128,45 @@ export function SettingsView({
                 </div>
               </div>
             ))}
+        </div>
+
+        <p className="mb-1.5 mt-3 text-[11px] font-semibold uppercase tracking-[.08em] text-white/40">
+          Compact bar
+        </p>
+        <div className="overflow-hidden rounded-[14px] border border-[#1f1f1f] bg-[#121212]">
+          <div className="flex h-8 items-center justify-between border-b border-white/[0.06] px-2.5">
+            <span
+              className={`text-[11px] transition-colors ${
+                settings.compactBar ? "text-white" : "text-white/50"
+              }`}
+            >
+              Show compact bar
+            </span>
+            <Toggle
+              value={settings.compactBar}
+              onChange={() => onChange({ ...settings, compactBar: !settings.compactBar })}
+            />
+          </div>
+          {compactRows.map(({ key, label }) => (
+            <div
+              key={key}
+              className={`flex h-8 items-center justify-between border-b border-white/[0.06] pl-6 pr-2.5 last:border-0 ${
+                settings.compactBar ? "" : "opacity-50"
+              }`}
+            >
+              <span
+                className={`text-[11px] transition-colors ${
+                  settings.compactBar && settings[key] ? "text-white" : "text-white/50"
+                }`}
+              >
+                {label}
+              </span>
+              <Toggle
+                value={settings.compactBar && settings[key]}
+                onChange={() => onChange({ ...settings, [key]: !settings[key] })}
+              />
+            </div>
+          ))}
         </div>
 
         <div className="mb-1.5 mt-3 flex items-center justify-between">

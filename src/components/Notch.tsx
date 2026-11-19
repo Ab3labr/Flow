@@ -1,15 +1,16 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Timer as TimerIcon } from "lucide-react";
+import { CalendarDays, Square } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarAccount,
-  CalendarEvent,
   CalendarProvider,
   DEFAULT_NOTCH_SETTINGS,
   calendarService,
   mediaService,
+  powerService,
   settingsService,
   type NotchSettings,
+  type PowerState,
   type Track,
 } from "../services";
 import { isMockMode, isTauriApp } from "../services/env";
@@ -18,8 +19,6 @@ import {
   isFullscreenAppActive,
   onCloseRequest,
   onOpenRequest,
-  setUiMode,
-  type UiMode,
 } from "../services/uiService";
 import {
   COMPACT_BAR_HEIGHT,
@@ -27,9 +26,12 @@ import {
   COMPACT_BAR_MIN_WIDTH,
   CompactBar,
 } from "../live/CompactBar";
+import { IDLE_BAR_HEIGHT, IDLE_BAR_WIDTH } from "../live/geometry";
 import { LIVE_PRIORITIES } from "../live/priorities";
 import type { LiveActivity } from "../live/types";
 import { useLiveActivities } from "../live/useLiveActivities";
+import { useWindowTransition } from "../live/useWindowTransition";
+import type { Surface, WindowTarget } from "../live/windowTransition";
 import { CalendarView } from "./CalendarView";
 import { CaptureView } from "./CaptureView";
 import { EventCard, JoinButton } from "./EventCard";
@@ -50,12 +52,61 @@ const baseHeights: Record<Exclude<TabId, "notes">, number> = {
 const isTabId = (value: string): value is TabId =>
   (["home", "timer", "calendar", "notes", "capture", "settings"] as const).includes(value as TabId);
 
+const SURFACE_SPRING = { type: "spring", stiffness: 380, damping: 30, mass: 0.9 } as const;
+const CONTENT_EASE = [0.22, 1, 0.36, 1] as const;
+
 /** Real tracks may have an unknown duration (`durationMs: null`). */
 function trackSeconds(track: Track): number {
   if (track.durationMs !== undefined) {
     return track.durationMs == null ? 0 : track.durationMs / 1000;
   }
   return track.duration;
+}
+
+/** Recording: `MM:SS`, or `H:MM:SS` once an hour has elapsed. */
+function formatElapsed(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const remainder = total % 60;
+  const tail = `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+  return hours > 0 ? `${hours}:${tail}` : tail;
+}
+
+/** Timer compact label: `M:SS` (no leading minute zero). */
+function formatTimer(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+/** A `power-state` event becomes a 4 s transient compact-bar slot. */
+function powerActivity(state: PowerState): LiveActivity {
+  const low = !state.pluggedIn && state.percent != null && state.percent <= 20;
+  const color = low ? "#ff453a" : "#30d158";
+  const label = state.pluggedIn
+    ? state.percent === 100 ? "Charged" : "Charging"
+    : "Battery";
+  return {
+    id: "charging",
+    kind: "charging",
+    mode: "transient",
+    ttlMs: 4_000,
+    priority: LIVE_PRIORITIES.charging,
+    accent: color,
+    leading: {
+      type: "icon",
+      name: state.pluggedIn ? "charging" : "battery",
+      color,
+    },
+    label,
+    trailing: {
+      type: "text",
+      value: state.percent == null ? "—" : `${state.percent}%`,
+      color,
+    },
+    hover: "none",
+    maxWidth: 200,
+  };
 }
 
 function IdleHome({
@@ -119,43 +170,49 @@ export function Notch() {
   const [timerTotal, setTimerTotal] = useState(300);
   const [timerRemaining, setTimerRemaining] = useState(300);
   const [timerRunning, setTimerRunning] = useState(false);
+  const [timerActive, setTimerActive] = useState(false);
   const [timerComplete, setTimerComplete] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [notesHeight, setNotesHeight] = useState(172);
   const [newNoteRequest, setNewNoteRequest] = useState(0);
   const [accounts, setAccounts] = useState<CalendarAccount[]>(calendarService.getDefaultAccounts);
-  const [reminderEvent, setReminderEvent] = useState<CalendarEvent | null>(null);
+  const [meetingActivity, setMeetingActivity] = useState<LiveActivity | null>(null);
   const [settings, setSettings] = useState<NotchSettings>(DEFAULT_NOTCH_SETTINGS);
   const hoverTimer = useRef<number | undefined>(undefined);
   const leaveTimer = useRef<number | undefined>(undefined);
   const focusTimer = useRef<number | undefined>(undefined);
   const completionTimer = useRef<number | undefined>(undefined);
-  const reminderTimer = useRef<number | undefined>(undefined);
+  const dissolveTimer = useRef<number | undefined>(undefined);
   const remindedEvent = useRef<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const expandedRef = useRef(false);
   const settingsRef = useRef<NotchSettings>(DEFAULT_NOTCH_SETTINGS);
   const settingsSaveSequence = useRef(0);
   const track = isMockMode ? mockTracks[trackIndex] : realTrack;
-  const { top: topActivity, register, update, remove } = useLiveActivities();
+  const { top: topActivity, register, update, remove, clear } = useLiveActivities();
   const [barWidth, setBarWidth] = useState(COMPACT_BAR_MIN_WIDTH);
   const [fullscreenActive, setFullscreenActive] = useState(false);
   const musicRegistered = useRef(false);
   const musicRemoveTimer = useRef<number | undefined>(undefined);
-  const wasCompact = useRef(false);
+  const powerHideTimer = useRef<number | undefined>(undefined);
+  const powerVisible = useRef(false);
   const visibleAccounts = settings.noCalendars ? [] : accounts;
   const events = useMemo(
     () => calendarService.getToday(visibleAccounts),
     [accounts, settings.noCalendars],
   );
+  const recordingDisplay = formatElapsed(recordingTime);
+  const timerDisplay = formatTimer(timerRemaining);
+  const timerProgress = timerTotal > 0 ? timerRemaining / timerTotal : 0;
   const upcomingEvent = settings.upcomingEvent ? events[0] : undefined;
-  const livePill = recording || timerComplete || Boolean(reminderEvent);
+
   const musicActivity = useMemo<LiveActivity | null>(() => {
-    if (!track) return null;
+    if (!track || !track.isMusicApp || !settings.compactBar || !settings.compactMusic) return null;
     return {
       id: "music",
       kind: "music",
+      mode: "persistent",
       priority: LIVE_PRIORITIES.music,
       leading: track.artDataUrl
         ? { type: "image", url: track.artDataUrl }
@@ -167,18 +224,97 @@ export function Notch() {
       label: track.title,
       trailing: "equalizer",
       playing,
+      hover: "expand",
       expandTab: "home",
     };
-  }, [track, playing]);
+  }, [track, playing, settings.compactBar, settings.compactMusic]);
+
+  const recordingActivity = useMemo<LiveActivity | null>(() => {
+    if (!recording || !settings.compactBar || !settings.compactRecording) return null;
+    return {
+      id: "recording",
+      kind: "recording",
+      mode: "persistent",
+      priority: LIVE_PRIORITIES.recording,
+      accent: "#ff453a",
+      leading: { type: "recordingDot", color: "#ff453a" },
+      label: recordingDisplay,
+      hover: "actions",
+      expandTab: "capture",
+      actions: [
+        {
+          id: "stop",
+          label: "Stop recording",
+          icon: (
+            <span className="grid h-4 w-4 place-items-center rounded-full bg-white/15 text-white hover:bg-white/25">
+              <Square className="h-2.5 w-2.5 fill-current" strokeWidth={2} />
+            </span>
+          ),
+          onClick: () => setRecording(false),
+        },
+      ],
+    };
+  }, [recording, recordingDisplay, settings.compactBar, settings.compactRecording]);
+
+  const timerActivity = useMemo<LiveActivity | null>(() => {
+    if (!timerActive || timerComplete || !settings.compactBar || !settings.compactTimer) return null;
+    return {
+      id: "timer",
+      kind: "timer",
+      mode: "persistent",
+      priority: LIVE_PRIORITIES.timer,
+      leading: { type: "ring", progress: timerProgress },
+      label: timerDisplay,
+      trailing: timerRunning ? "none" : "pause",
+      playing: timerRunning,
+      hover: "expand",
+      expandTab: "timer",
+      maxWidth: 170,
+    };
+  }, [
+    timerActive,
+    timerComplete,
+    timerProgress,
+    timerDisplay,
+    timerRunning,
+    settings.compactBar,
+    settings.compactTimer,
+  ]);
+
+  const timerDoneActivity = useMemo<LiveActivity | null>(() => {
+    if (!timerComplete || !settings.compactBar || !settings.compactTimer) return null;
+    return {
+      id: "timer-done",
+      kind: "timer-done",
+      mode: "transient",
+      ttlMs: 5000,
+      priority: LIVE_PRIORITIES.timerDone,
+      leading: { type: "pulse", name: "timer", color: "#f09ab7" },
+      label: "Timer done",
+      hover: "none",
+    };
+  }, [timerComplete, settings.compactBar, settings.compactTimer]);
+
   const compact = Boolean(
     settings.compactBar &&
     !expanded &&
-    !livePill &&
     topActivity &&
     !(settings.hideInFullscreen && fullscreenActive),
   );
   const panelHeight = tab === "notes" ? notesHeight : baseHeights[tab];
-  const uiMode: UiMode = expanded ? "open" : livePill || compact ? "pill" : "idle";
+  const surface: Surface = expanded ? "open" : compact ? "compact" : "idle";
+  const windowTarget = useMemo<WindowTarget>(
+    () => ({
+      surface,
+      geometry: { panelHeight, barWidth, barHeight: COMPACT_BAR_HEIGHT },
+    }),
+    [surface, panelHeight, barWidth],
+  );
+  const { transitioning } = useWindowTransition(
+    windowTarget,
+    pinned,
+    Boolean(reducedMotion),
+  );
 
   useEffect(() => {
     expandedRef.current = expanded;
@@ -247,8 +383,9 @@ export function Notch() {
     });
   }, []);
 
-  // Music activity: present while playing; a pause keeps it (flat bars) for
-  // 3 s so the bar does not flicker during a quick resume.
+  // Music activity: only `isMusicApp` sessions register, and only while
+  // playing; a pause keeps it (flat bars) for 3 s so the bar does not flicker
+  // during a quick resume.
   useEffect(() => {
     window.clearTimeout(musicRemoveTimer.current);
     musicRemoveTimer.current = undefined;
@@ -273,14 +410,92 @@ export function Notch() {
   useEffect(
     () => () => {
       window.clearTimeout(musicRemoveTimer.current);
-      remove("music");
+      window.clearTimeout(dissolveTimer.current);
+      clear();
     },
-    [remove],
+    [clear],
   );
 
   useEffect(() => {
-    wasCompact.current = compact;
-  }, [compact]);
+    if (!recordingActivity) {
+      remove("recording");
+      return;
+    }
+    register(recordingActivity);
+  }, [recordingActivity, register, remove]);
+
+  useEffect(() => {
+    if (!timerActivity) {
+      remove("timer");
+      return;
+    }
+    register(timerActivity);
+  }, [timerActivity, register, remove]);
+
+  useEffect(() => {
+    if (!timerDoneActivity) {
+      remove("timer-done");
+      return;
+    }
+    register(timerDoneActivity);
+  }, [timerDoneActivity, register, remove]);
+
+  useEffect(() => {
+    if (!meetingActivity) {
+      remove("meeting");
+      return;
+    }
+    register(meetingActivity);
+  }, [meetingActivity, register, remove]);
+
+  // A transition starts a fresh 4 s slot; percent updates only refresh the
+  // visible slot, so they never restart the store's TTL timer.
+  useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+
+    const stopPower = () => {
+      powerVisible.current = false;
+      window.clearTimeout(powerHideTimer.current);
+      powerHideTimer.current = undefined;
+      remove("charging");
+    };
+
+    if (!settings.compactBar || !settings.compactCharging) {
+      stopPower();
+      return;
+    }
+
+    void powerService
+      .subscribe((state) => {
+        if (disposed) return;
+        const activity = powerActivity(state);
+        if (state.transition !== "none" || !powerVisible.current) {
+          register(activity);
+          powerVisible.current = true;
+          window.clearTimeout(powerHideTimer.current);
+          powerHideTimer.current = window.setTimeout(stopPower, 4_000);
+          return;
+        }
+        update("charging", {
+          accent: activity.accent,
+          leading: activity.leading,
+          label: activity.label,
+          trailing: activity.trailing,
+        });
+      })
+      .then((unsubscribe) => {
+        if (disposed) unsubscribe();
+        else stop = unsubscribe;
+      })
+      .catch((error) => console.error("power subscribe failed", error));
+
+    return () => {
+      disposed = true;
+      stop?.();
+      stopPower();
+    };
+  }, [settings.compactBar, settings.compactCharging, register, remove, update]);
 
   // Fullscreen suppression mirrors the Rust hover trigger.
   useEffect(() => {
@@ -301,22 +516,6 @@ export function Notch() {
       window.clearInterval(id);
     };
   }, [settings.compactBar, settings.hideInFullscreen, expanded]);
-
-  // Report the window model to Rust. Open/pill resizes apply before Motion
-  // expands; idle is only sent after the close animation has finished.
-  useEffect(() => {
-    const pillWidth = compact ? barWidth : 108;
-    const pillHeight = compact ? COMPACT_BAR_HEIGHT : 26;
-    if (uiMode !== "idle") {
-      setUiMode(uiMode, panelHeight, pinned, pillWidth, pillHeight);
-      return;
-    }
-    const id = window.setTimeout(
-      () => setUiMode("idle", panelHeight, false, pillWidth, pillHeight),
-      250,
-    );
-    return () => window.clearTimeout(id);
-  }, [uiMode, panelHeight, pinned, compact, barWidth]);
 
   useEffect(() => {
     let disposed = false;
@@ -345,9 +544,17 @@ export function Notch() {
 
   const close = useCallback(() => {
     window.clearTimeout(focusTimer.current);
+    window.clearTimeout(dissolveTimer.current);
+    dissolveTimer.current = undefined;
     setPinned(false);
     setExpanded(false);
   }, []);
+
+  /** Start/Record collapse the panel into the live bar after a short beat. */
+  const collapseIntoBar = useCallback(() => {
+    window.clearTimeout(dissolveTimer.current);
+    dissolveTimer.current = window.setTimeout(() => close(), 450);
+  }, [close]);
 
   // Rust is the source of truth: double-Alt, Esc and outside clicks arrive as
   // close-request. The frontend obeys and clears the pin (close does both).
@@ -404,9 +611,10 @@ export function Notch() {
       setTimerRemaining((current) => {
         if (current <= 1) {
           setTimerRunning(false);
+          setTimerActive(false);
           setTimerComplete(true);
           window.clearTimeout(completionTimer.current);
-          completionTimer.current = window.setTimeout(() => setTimerComplete(false), 3000);
+          completionTimer.current = window.setTimeout(() => setTimerComplete(false), 5000);
           return 0;
         }
         return current - 1;
@@ -428,12 +636,42 @@ export function Notch() {
     });
     if (!event || remindedEvent.current === event.id) return;
     remindedEvent.current = event.id;
+    if (!settings.compactBar) return;
+    const provider = calendarService.getMeetingProvider(event);
+    let hideTimer: number | undefined;
     const showTimer = window.setTimeout(() => {
-      setReminderEvent(event);
-      reminderTimer.current = window.setTimeout(() => setReminderEvent(null), 6000);
+      setMeetingActivity({
+        id: "meeting",
+        kind: "meeting",
+        mode: "transient",
+        ttlMs: 6000,
+        priority: LIVE_PRIORITIES.meetingReminder,
+        accent: "#30d158",
+        leading: { type: "icon", name: "meeting" },
+        label: `${event.title} in 5 min`,
+        hover: "none",
+        expandTab: "calendar",
+        render: ({ activity }) => (
+          <>
+            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-[6px] bg-white/10">
+              <CalendarDays className="h-3 w-3 text-white/80" strokeWidth={1.8} />
+            </span>
+            <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-white">
+              {activity.label}
+            </span>
+            <span onClick={(click) => click.stopPropagation()}>
+              <JoinButton provider={provider ?? null} compact />
+            </span>
+          </>
+        ),
+      });
+      hideTimer = window.setTimeout(() => setMeetingActivity(null), 6000);
     }, 900);
-    return () => window.clearTimeout(showTimer);
-  }, [events]);
+    return () => {
+      window.clearTimeout(showTimer);
+      if (hideTimer !== undefined) window.clearTimeout(hideTimer);
+    };
+  }, [events, settings.compactBar]);
 
   useEffect(() => {
     let lastAlt = 0;
@@ -518,14 +756,10 @@ export function Notch() {
   const enterPanel = () => {
     window.clearTimeout(leaveTimer.current);
     window.clearTimeout(hoverTimer.current);
-    if (reminderEvent) window.clearTimeout(reminderTimer.current);
-    if (compact && !expanded) {
-      // Hover on the compact bar always lands on Home, unpinned.
-      setTab("home");
+    if (compact && !expanded && topActivity?.hover === "expand") {
+      setTab(topActivity.expandTab ?? "home");
       setExpanded(true);
-      return;
     }
-    if (livePill && !expanded) setExpanded(true);
   };
 
   const openPinnedFromBar = () => {
@@ -536,17 +770,19 @@ export function Notch() {
     setExpanded(true);
   };
 
-  const handleBarWidth = useCallback((width: number) => {
-    setBarWidth(Math.max(COMPACT_BAR_MIN_WIDTH, Math.min(COMPACT_BAR_MAX_WIDTH, width)));
-  }, []);
+  const barMaxWidth = topActivity?.maxWidth ?? COMPACT_BAR_MAX_WIDTH;
+  const handleBarWidth = useCallback(
+    (width: number) => {
+      if (!compact) return;
+      const next = Math.max(COMPACT_BAR_MIN_WIDTH, Math.min(barMaxWidth, width));
+      setBarWidth((current) => (current === next ? current : next));
+    },
+    [barMaxWidth, compact],
+  );
 
   const leaveTarget = () => {
     window.clearTimeout(hoverTimer.current);
     if (!pinned) leaveTimer.current = window.setTimeout(() => setExpanded(false), 400);
-    if (reminderEvent) {
-      window.clearTimeout(reminderTimer.current);
-      reminderTimer.current = window.setTimeout(() => setReminderEvent(null), 6000);
-    }
   };
 
   const skip = (direction: number) => {
@@ -592,8 +828,11 @@ export function Notch() {
     setTimerTotal(seconds);
     setTimerRemaining(seconds);
     setTimerRunning(false);
+    setTimerActive(false);
     setTimerComplete(false);
     window.clearTimeout(completionTimer.current);
+    window.clearTimeout(dissolveTimer.current);
+    dissolveTimer.current = undefined;
   };
 
   const openNewNote = () => {
@@ -682,8 +921,18 @@ export function Notch() {
           setTimerTotal((total) => total + seconds);
         }}
         onToggle={() => {
+          const starting = !timerRunning;
           if (timerRemaining === 0) setTimerRemaining(timerTotal);
-          setTimerRunning((running) => !running);
+          setTimerRunning(starting);
+          if (starting) {
+            setTimerActive(true);
+            setTimerComplete(false);
+            window.clearTimeout(completionTimer.current);
+            if (settings.compactBar && settings.compactTimer) collapseIntoBar();
+          } else {
+            window.clearTimeout(dissolveTimer.current);
+            dissolveTimer.current = undefined;
+          }
         }}
       />
     ),
@@ -708,7 +957,13 @@ export function Notch() {
         elapsed={recordingTime}
         onRecordingChange={(value) => {
           setRecording(value);
-          if (value) setRecordingTime(0);
+          if (value) {
+            setRecordingTime(0);
+            if (settings.compactBar && settings.compactRecording) collapseIntoBar();
+          } else {
+            window.clearTimeout(dissolveTimer.current);
+            dissolveTimer.current = undefined;
+          }
         }}
       />
     ),
@@ -727,12 +982,9 @@ export function Notch() {
     ),
   };
 
-  const recordingDisplay = `${Math.floor(recordingTime / 60)}:${String(recordingTime % 60).padStart(2, "0")}`;
-  const reminderProvider = reminderEvent ? calendarService.getMeetingProvider(reminderEvent) : null;
-
   return (
     <div className="pointer-events-none fixed inset-x-0 top-0 z-50 h-0">
-      {settings.topEdge && !expanded && !livePill && (
+      {settings.topEdge && surface === "idle" && !transitioning && (
         <div
           aria-label="Open notch"
           className="pointer-events-auto absolute left-1/2 top-0 h-1 w-60 -translate-x-1/2"
@@ -744,44 +996,67 @@ export function Notch() {
         ref={panelRef}
         role={expanded ? "dialog" : undefined}
         aria-label={expanded ? "Windows notch utility" : undefined}
-        className={`absolute left-1/2 top-0 -translate-x-1/2 bg-black ${
-          compact ? "overflow-visible" : "overflow-hidden"
-        } ${expanded || livePill || compact ? "pointer-events-auto" : "pointer-events-none"} ${
-          expanded || livePill || compact ? "shadow-[0_12px_34px_rgba(0,0,0,.36)]" : ""
-        }`}
+        className={`absolute left-1/2 top-0 -translate-x-1/2 overflow-visible bg-black ${
+          surface === "idle" ? "pointer-events-none" : "pointer-events-auto"
+        } ${surface === "idle" ? "" : "shadow-[0_12px_34px_rgba(0,0,0,.36)]"}`}
         onPointerEnter={enterPanel}
         onPointerLeave={leaveTarget}
         animate={{
-          width: expanded ? 480 : compact ? barWidth : livePill ? 108 : 120,
-          height: expanded ? panelHeight : compact ? COMPACT_BAR_HEIGHT : livePill ? 26 : 4,
-          opacity: expanded || livePill || compact ? 1 : 0,
-          borderBottomLeftRadius: expanded ? 22 : compact ? 15 : livePill ? 13 : 2,
-          borderBottomRightRadius: expanded ? 22 : compact ? 15 : livePill ? 13 : 2,
+          width:
+            surface === "open" ? 480 : surface === "compact" ? barWidth : IDLE_BAR_WIDTH,
+          height:
+            surface === "open"
+              ? panelHeight
+              : surface === "compact"
+                ? COMPACT_BAR_HEIGHT
+                : IDLE_BAR_HEIGHT,
+          opacity: surface === "idle" ? 0 : 1,
+          borderBottomLeftRadius: surface === "open" ? 22 : surface === "compact" ? 15 : 2,
+          borderBottomRightRadius: surface === "open" ? 22 : surface === "compact" ? 15 : 2,
         }}
-        transition={
-          reducedMotion
+        transition={{
+          width: reducedMotion ? { duration: 0.15 } : SURFACE_SPRING,
+          height: reducedMotion ? { duration: 0.15 } : SURFACE_SPRING,
+          borderBottomLeftRadius: reducedMotion ? { duration: 0.15 } : SURFACE_SPRING,
+          borderBottomRightRadius: reducedMotion ? { duration: 0.15 } : SURFACE_SPRING,
+          opacity: reducedMotion
             ? { duration: 0.15 }
-            : expanded || compact || (wasCompact.current && !livePill)
-              ? { type: "spring", stiffness: 380, damping: 30, mass: 0.9 }
-              : {
-                  height: { delay: 0.1, duration: 0.22 },
-                  width: { delay: 0.1, duration: 0.22 },
-                  opacity: { delay: livePill ? 0 : 0.18, duration: 0.15 },
-                }
-        }
+            : { duration: 0.22, ease: CONTENT_EASE },
+        }}
       >
-        <AnimatePresence mode="wait">
-          {expanded ? (
+        <AnimatePresence initial={false}>
+          {surface === "open" ? (
             <motion.div
               key="panel"
-              className="h-full w-full px-2.5 pt-2.5"
-              initial={{ opacity: 0, filter: "blur(6px)", y: 6 }}
-              animate={{ opacity: 1, filter: "blur(0px)", y: 0 }}
-              exit={{ opacity: 0, filter: "blur(6px)", transition: { duration: 0.12 } }}
+              className="absolute inset-0 overflow-hidden px-2.5 pt-2.5"
+              style={{
+                borderBottomLeftRadius: "inherit",
+                borderBottomRightRadius: "inherit",
+              }}
+              initial={
+                reducedMotion
+                  ? { opacity: 0 }
+                  : { opacity: 0, filter: "blur(6px)", y: 6, scale: 0.985 }
+              }
+              animate={
+                reducedMotion
+                  ? { opacity: 1 }
+                  : { opacity: 1, filter: "blur(0px)", y: 0, scale: 1 }
+              }
+              exit={
+                reducedMotion
+                  ? { opacity: 0, transition: { duration: 0.15 } }
+                  : {
+                      opacity: 0,
+                      filter: "blur(6px)",
+                      scale: 0.985,
+                      transition: { duration: 0.12 },
+                    }
+              }
               transition={{
                 delay: reducedMotion ? 0 : 0.13,
                 duration: reducedMotion ? 0.15 : 0.24,
-                ease: [0.22, 1, 0.36, 1],
+                ease: CONTENT_EASE,
               }}
               onClick={(event) => {
                 event.stopPropagation();
@@ -799,7 +1074,7 @@ export function Notch() {
                     exit={{ opacity: 0, filter: "blur(5px)", transition: { duration: 0.12 } }}
                     transition={{
                       duration: reducedMotion ? 0.15 : 0.22,
-                      ease: [0.22, 1, 0.36, 1],
+                      ease: CONTENT_EASE,
                     }}
                   >
                     {content[tab]}
@@ -807,62 +1082,34 @@ export function Notch() {
                 </AnimatePresence>
               </div>
             </motion.div>
-          ) : livePill ? (
-            <motion.div
-              key={recording ? "recording" : "timer-done"}
-              initial={{ opacity: 0, y: -5 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -5 }}
-              className="flex h-[26px] items-center justify-center gap-2 px-2.5"
-            >
-              {recording ? (
-                <>
-                  <span className="relative flex h-2.5 w-2.5">
-                    <motion.span
-                      className="absolute inset-0 rounded-full bg-[#ff453a]"
-                      animate={{ opacity: [0.55, 0, 0.55], scale: [1, 2, 1] }}
-                      transition={{ duration: 1.8, repeat: Infinity }}
-                    />
-                    <span className="relative h-2.5 w-2.5 rounded-full bg-[#ff453a]" />
-                  </span>
-                  <span className="text-[11px] font-medium tabular-nums text-white/70">
-                    {recordingDisplay}
-                  </span>
-                </>
-              ) : timerComplete ? (
-                <>
-                  <motion.span
-                    animate={{ scale: [1, 1.35, 1], opacity: [0.5, 1, 0.5] }}
-                    transition={{ duration: 1.5, repeat: Infinity }}
-                  >
-                    <TimerIcon className="h-3.5 w-3.5 text-white/70" />
-                  </motion.span>
-                  <span className="text-[11px] font-medium text-white/70">Timer done</span>
-                </>
-              ) : reminderEvent ? (
-                <>
-                  <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-white/70">
-                    {reminderEvent.title} in 5 min
-                  </span>
-                  <JoinButton provider={reminderProvider} compact />
-                </>
-              ) : null}
-            </motion.div>
-          ) : compact && topActivity ? (
+          ) : surface === "compact" && topActivity ? (
             <motion.div
               key="compact"
-              className="h-[30px]"
-              initial={{ opacity: 0, filter: "blur(6px)" }}
-              animate={{ opacity: 1, filter: "blur(0px)" }}
-              exit={{
-                opacity: 0,
-                filter: "blur(6px)",
-                transition: { duration: reducedMotion ? 0.15 : 0.16 },
-              }}
+              className="absolute inset-x-0 top-0 h-[30px]"
+              initial={
+                reducedMotion
+                  ? { opacity: 0 }
+                  : { opacity: 0, filter: "blur(6px)", scale: 1.03 }
+              }
+              animate={
+                reducedMotion
+                  ? { opacity: 1 }
+                  : { opacity: 1, filter: "blur(0px)", scale: 1 }
+              }
+              exit={
+                reducedMotion
+                  ? { opacity: 0, transition: { duration: 0.15 } }
+                  : {
+                      opacity: 0,
+                      filter: "blur(6px)",
+                      scale: 1.03,
+                      transition: { duration: 0.16 },
+                    }
+              }
               transition={{
                 delay: reducedMotion ? 0 : 0.08,
                 duration: reducedMotion ? 0.15 : 0.22,
-                ease: [0.22, 1, 0.36, 1],
+                ease: CONTENT_EASE,
               }}
             >
               <CompactBar

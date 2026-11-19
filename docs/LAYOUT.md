@@ -7,20 +7,22 @@ in Tauri use logical px (same numbers at 100% scaling).
 - Expanded width: **480 px**. Heights per tab:
   home 172, timer 250, calendar 230, capture 185, settings 340,
   notes dynamic **172 → 340**.
-- Collapsed: invisible sliver **120x4** (opacity 0, radius 2); live pill
-  **108x26** (radius 13).
+- Collapsed: invisible sliver **120x4** (opacity 0, radius 2), or the single
+  compact live bar: height **30**, content-fit width **120–260** (activity
+  `maxWidth` can lower the upper bound), bottom radius **15**.
 - Position: top-center of screen, top edge y=0.
 - Background `#000` (`bg-black`), `overflow-hidden`.
-- Shadow when open/pill: `0 12px 34px rgba(0,0,0,.36)`.
-- Border radius: bottom corners only — expanded **22 px**, pill **13 px**,
+- Shadow when open/bar: `0 12px 34px rgba(0,0,0,.36)`.
+- Border radius: bottom corners only — expanded **22 px**, bar **15 px**,
   sliver 2 px. (Top corners square — it hangs from screen top.)
 - Content padding: `px-2.5 pt-2.5` (10 px sides/top); TopBar `h-[26px]`;
   content `mt-1.5` (6 px).
 
 ## Window size recommendation (Tauri)
 Max panel 480x340 + shadow bleed (~40 px) → window ≈ **560x400** logical,
-transparent, centered horizontally on the active monitor, y=0. Pill mode
-can shrink to ~200x90; see docs/ARCHITECTURE.md.
+transparent, centered horizontally on the active monitor, y=0. The `pill`
+window mode follows the compact bar: `(barWidth + 32) x (barHeight + 18)`,
+so it is typically 152–292 x 48; see docs/ARCHITECTURE.md.
 
 ## Colors
 - Page/stage bg: `#02080d` outer, `#06131b` stage (prototype only).
@@ -69,8 +71,9 @@ can shrink to ~200x90; see docs/ARCHITECTURE.md.
 - Capture tiles: h-100 flex-1 radius 14; record ring 24px border 5px.
 - Settings rows: h-8, radius 14 card, radius 12 (`rounded-xl`) sections;
   toggle 36x20 (w-9 h-5), knob 14px at x 3/19, top 3px.
-- Live pill content: h-26px, px-2.5, gap-2, text 11px medium tabular.
-- Equalizer bars: w-2px, pink, gap 2px, container h-3.
+- Compact bar content: h-30px, pl-1.5 pr-2.5, gap-1.5, text 11px medium;
+  times/countdowns are tabular. Leading 20x20 radius 6; timer ring 14px.
+- Equalizer bars: w-2px, activity colour (pink for music), gap 2px, h-3.
 
 ## Spacing rhythm
 - Panel padding 10px; section gaps mt-1.5 (6px), mt-2 (8px), mt-2.5 (10px),

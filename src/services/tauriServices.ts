@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { NotchSettings, Track } from "./types";
+import type { NotchSettings, PowerState, Track } from "./types";
 
 type AppSettings = {
   notch: NotchSettings;
@@ -31,6 +31,29 @@ async function save(settings: NotchSettings): Promise<void> {
 
 export const settingsService = { load, save };
 
+/** Rust emits `power-state` only on AC/percent changes, never at startup. */
+let powerStarted: Promise<void> | null = null;
+const powerListeners = new Set<(state: PowerState) => void>();
+
+function ensurePowerStarted(): Promise<void> {
+  if (!powerStarted) {
+    powerStarted = listen<PowerState>("power-state", (event) => {
+      for (const listener of powerListeners) listener(event.payload);
+    }).then(() => {});
+  }
+  return powerStarted;
+}
+
+export const powerService = {
+  subscribe: async (handler: (state: PowerState) => void): Promise<() => void> => {
+    await ensurePowerStarted();
+    powerListeners.add(handler);
+    return () => {
+      powerListeners.delete(handler);
+    };
+  },
+};
+
 /** Rust `media-state` / `media_snapshot` payload (docs/ARCHITECTURE.md). */
 type MediaPayload = {
   title: string;
@@ -41,6 +64,8 @@ type MediaPayload = {
   positionMs: number;
   durationMs: number | null;
   artDataUrl: string | null;
+  isMusicApp: boolean;
+  albumTitle: string | null;
   capturedAtMs: number;
 };
 
@@ -60,6 +85,8 @@ function toTrack(payload: MediaPayload): Track {
     durationMs: payload.durationMs,
     colors: ["#3a3a3a", "#242424", "#141414"],
     artDataUrl: payload.artDataUrl,
+    isMusicApp: payload.isMusicApp,
+    albumTitle: payload.albumTitle,
     playing: payload.playing,
     playbackRate: payload.playbackRate,
     positionMs: payload.positionMs,

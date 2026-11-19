@@ -11,8 +11,9 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { isMockMode } from "../services/env";
+import { logWebview } from "../services/uiService";
 import type { Track } from "../services";
-import { Equalizer } from "./CollapsedPill";
+import { Equalizer } from "../live/Equalizer";
 import { PressButton } from "./TopBar";
 
 // Whole seconds, always floored: elapsed + remaining equals the duration.
@@ -108,6 +109,13 @@ export function MusicCard({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [glowColor, setGlowColor] = useState<string | null>(null);
+  const [artFailed, setArtFailed] = useState(false);
+
+  // A new art URL gets a fresh chance to load; a failure keeps the placeholder
+  // until then.
+  useEffect(() => {
+    setArtFailed(false);
+  }, [track.artDataUrl]);
   const duration =
     track.durationMs !== undefined
       ? track.durationMs === null
@@ -193,12 +201,18 @@ export function MusicCard({
             exit={{ opacity: 0, scale: 0.96 }}
             transition={{ duration: 0.26 }}
           >
-            {track.artDataUrl ? (
+            {track.artDataUrl && !artFailed ? (
               <img
                 src={track.artDataUrl}
                 alt=""
                 draggable={false}
                 className="h-full w-full object-cover"
+                onError={() => {
+                  const url = track.artDataUrl ?? "";
+                  const mime = /^data:([^;,]+)/.exec(url)?.[1] ?? "unknown";
+                  logWebview(`album art <img> failed: mime=${mime} dataUrlLength=${url.length}`);
+                  setArtFailed(true);
+                }}
               />
             ) : (
               <div className="flex h-full items-end p-2">

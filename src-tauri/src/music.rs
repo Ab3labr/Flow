@@ -48,6 +48,10 @@ pub struct MediaSnapshot {
   pub position_ms: i64,
   pub duration_ms: Option<i64>,
   pub art_data_url: Option<String>,
+  /// Dedicated music app (or a browser playing something with an album).
+  /// Gates the compact live bar; the full panel still shows any media.
+  pub is_music_app: bool,
+  pub album_title: Option<String>,
   pub captured_at_ms: i64,
 }
 
@@ -62,6 +66,8 @@ impl MediaSnapshot {
       && (self.playback_rate - other.playback_rate).abs() < 1e-6
       && self.duration_ms == other.duration_ms
       && self.art_data_url == other.art_data_url
+      && self.is_music_app == other.is_music_app
+      && self.album_title == other.album_title
   }
 }
 
@@ -333,6 +339,10 @@ pub const BROWSER_APPS: [&str; 7] = [
   "vivaldi",
 ];
 
+/// Browser tabs are not music apps unless SMTC reports an album. One place to
+/// turn the heuristic off if it proves too eager.
+pub const BROWSER_ALBUM_HEURISTIC: bool = true;
+
 /// 0 = music app, 1 = other, 2 = browser.
 pub fn session_class(app_id: &str) -> u8 {
   let lower = app_id.to_ascii_lowercase();
@@ -342,6 +352,18 @@ pub fn session_class(app_id: &str) -> u8 {
     SESSION_CLASS_BROWSER
   } else {
     SESSION_CLASS_OTHER
+  }
+}
+
+/// Pure compact-bar gate: dedicated music apps always qualify, browsers only
+/// with a non-empty album title, and other sessions never do.
+pub fn is_music_app(app_id: &str, album_title: Option<&str>) -> bool {
+  match session_class(app_id) {
+    SESSION_CLASS_MUSIC => true,
+    SESSION_CLASS_BROWSER => {
+      BROWSER_ALBUM_HEURISTIC && album_title.is_some_and(|album| !album.trim().is_empty())
+    }
+    _ => false,
   }
 }
 
@@ -492,6 +514,55 @@ pub fn debug_enabled() -> bool {
     .unwrap_or(false)
 }
 
+/// Image formats recognised from the thumbnail's leading bytes. SMTC's
+/// `ContentType()` is unreliable, so it is never used to build the data URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtFormat {
+  Png,
+  Jpeg,
+  Gif,
+  Bmp,
+  WebP,
+}
+
+impl ArtFormat {
+  /// MIME type of the bytes as they will be embedded in the data URL.
+  pub fn mime(self) -> &'static str {
+    match self {
+      Self::Png => "image/png",
+      Self::Jpeg => "image/jpeg",
+      Self::Gif => "image/gif",
+      Self::Bmp => "image/bmp",
+      Self::WebP => "image/webp",
+    }
+  }
+
+  /// PNG and JPEG can be embedded verbatim; other formats are re-encoded.
+  pub fn is_native(self) -> bool {
+    matches!(self, Self::Png | Self::Jpeg)
+  }
+}
+
+/// Sniffs the thumbnail format from its magic bytes. `None` means unknown.
+pub fn sniff_art_format(bytes: &[u8]) -> Option<ArtFormat> {
+  if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+    return Some(ArtFormat::Png);
+  }
+  if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+    return Some(ArtFormat::Jpeg);
+  }
+  if bytes.starts_with(b"GIF8") {
+    return Some(ArtFormat::Gif);
+  }
+  if bytes.starts_with(b"BM") {
+    return Some(ArtFormat::Bmp);
+  }
+  if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+    return Some(ArtFormat::WebP);
+  }
+  None
+}
+
 /// Album-art cache identity: title + artist + album. A new key means new art.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtKey {
@@ -506,8 +577,9 @@ impl ArtKey {
   }
 }
 
-/// Decodes `bytes`, shrinks anything over 256 px (longest side) and re-encodes
-/// it as JPEG quality 85. Returns `None` when the bytes are not a PNG/JPEG.
+/// Decodes `bytes` (any format the image crate can read), shrinks anything
+/// over 256 px (longest side) and re-encodes it as JPEG quality 85. Returns
+/// `None` when the bytes cannot be decoded.
 pub fn downscale_jpeg(bytes: &[u8]) -> Option<Vec<u8>> {
   let image = image::load_from_memory(bytes).ok()?;
   let thumbnail = if image.width() > ART_MAX_DIMENSION || image.height() > ART_MAX_DIMENSION {
@@ -520,6 +592,17 @@ pub fn downscale_jpeg(bytes: &[u8]) -> Option<Vec<u8>> {
   let mut output = Vec::new();
   image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, ART_JPEG_QUALITY)
     .write_image(rgb.as_raw(), width, height, image::ExtendedColorType::Rgb8)
+    .ok()?;
+  Some(output)
+}
+
+/// Last resort for bytes with no recognisable magic header: decode them and
+/// re-encode as PNG. `None` means the bytes are not a decodable image.
+pub fn reencode_png(bytes: &[u8]) -> Option<Vec<u8>> {
+  let image = image::load_from_memory(bytes).ok()?;
+  let mut output = Vec::new();
+  image
+    .write_to(&mut std::io::Cursor::new(&mut output), image::ImageFormat::Png)
     .ok()?;
   Some(output)
 }
@@ -550,6 +633,11 @@ pub fn base64_encode(input: &[u8]) -> String {
     });
   }
   output
+}
+
+/// Exact data URL shape the webview expects: `data:<mime>;base64,<data>`.
+pub fn art_data_url(mime: &str, bytes: &[u8]) -> String {
+  format!("data:{mime};base64,{}", base64_encode(bytes))
 }
 
 /// Unix milliseconds and WinRT ticks (100 ns since 1601-01-01 UTC) from the
@@ -623,11 +711,12 @@ pub fn needs_resync(previous: &MediaSnapshot, current: &MediaSnapshot, now_ms: i
 #[cfg(target_os = "windows")]
 mod imp {
   use super::{
-    base64_encode, choose_candidate, corrected_position_ticks, debug_enabled, downscale_jpeg,
-    session_class, source_label, ticks_to_ms, track_duration_ms, unix_now, ArtKey, ChoiceReason,
-    CommandMessage, LastState, MediaCommand, MediaSnapshot, MediaState, SessionHistory,
-    SessionInfo, ART_DOWNSCALE_BYTES, ART_MAX_ORIGINAL_BYTES, ART_RETRY_INTERVAL,
-    ART_RETRY_WINDOW, FAST_POLL_INTERVAL, FAST_POLL_WINDOW, POLL_INTERVAL,
+    art_data_url, choose_candidate, corrected_position_ticks, debug_enabled, downscale_jpeg,
+    is_music_app, reencode_png, session_class, sniff_art_format, source_label, ticks_to_ms,
+    track_duration_ms, unix_now, ArtFormat, ArtKey, ChoiceReason, CommandMessage, LastState,
+    MediaCommand, MediaSnapshot, MediaState, SessionHistory, SessionInfo, ART_DOWNSCALE_BYTES,
+    ART_MAX_ORIGINAL_BYTES, ART_RETRY_INTERVAL, ART_RETRY_WINDOW, BROWSER_ALBUM_HEURISTIC,
+    FAST_POLL_INTERVAL, FAST_POLL_WINDOW, POLL_INTERVAL, SESSION_CLASS_BROWSER,
   };
   use std::collections::{HashMap, HashSet};
   use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -917,6 +1006,20 @@ mod imp {
     for index in 0..count {
       let session = sessions.GetAt(index)?;
       let app_id = session_app_id(&session).unwrap_or_default();
+      if debug_enabled() && session_class(&app_id) == SESSION_CLASS_BROWSER {
+        let album_title = session
+          .TryGetMediaPropertiesAsync()
+          .ok()
+          .and_then(|operation| operation.join().ok())
+          .and_then(|properties| properties.AlbumTitle().map(|value| value.to_string()).ok())
+          .filter(|album| !album.trim().is_empty());
+        log::info!(
+          "media: browser album decision #{index} {app_id}: albumTitle={:?} isMusicApp={} heuristic={}",
+          album_title.as_deref().unwrap_or(""),
+          is_music_app(&app_id, album_title.as_deref()),
+          BROWSER_ALBUM_HEURISTIC
+        );
+      }
       *counts.entry(app_id.clone()).or_insert(0) += 1;
       app_ids.push(app_id);
       objects.push(session);
@@ -1015,10 +1118,11 @@ mod imp {
     let properties = session.TryGetMediaPropertiesAsync()?.join()?;
     let title = properties.Title()?.to_string();
     let artist = properties.Artist()?.to_string();
-    let album = properties
+    let album_title = properties
       .AlbumTitle()
       .map(|value| value.to_string())
-      .unwrap_or_default();
+      .ok()
+      .filter(|album| !album.trim().is_empty());
 
     let playback = session.GetPlaybackInfo()?;
     let status = playback.PlaybackStatus()?;
@@ -1060,10 +1164,11 @@ mod imp {
       }
     }
 
+    let music_app = is_music_app(&app_id, album_title.as_deref());
     let art_key = ArtKey {
       title: title.clone(),
       artist: artist.clone(),
-      album,
+      album: album_title.clone().unwrap_or_default(),
     };
     let art_data_url = art_for(session, &properties, &art_key, playing, art);
 
@@ -1076,6 +1181,8 @@ mod imp {
       position_ms: ticks_to_ms(position),
       duration_ms: track_duration_ms(start, end),
       art_data_url,
+      is_music_app: music_app,
+      album_title,
       captured_at_ms,
     })
   }
@@ -1150,8 +1257,8 @@ mod imp {
   }
 
   /// One art read. Under `FLOAT_DEBUG` it logs whether `Thumbnail()` was
-  /// present, whether the stream opened, its byte length and content type,
-  /// whether downscaling ran, and the final result.
+  /// present, whether the stream opened, its byte length and content type, the
+  /// sniffed format, and the resulting data URL's first 40 characters + length.
   fn art_attempt(
     properties: &GlobalSystemMediaTransportControlsSessionMediaProperties,
     label: &str,
@@ -1252,38 +1359,72 @@ mod imp {
     }
 
     let length = loaded as u64;
-    let source_mime = content_type
-      .split(';')
-      .next()
-      .map(str::trim)
-      .filter(|value| !value.is_empty())
-      .unwrap_or("image/jpeg");
-
-    let (output, mime, downscaled) = if length > ART_DOWNSCALE_BYTES {
-      match downscale_jpeg(&bytes) {
-        Some(jpeg) => (jpeg, "image/jpeg", true),
-        None if length < ART_MAX_ORIGINAL_BYTES => {
-          if debug {
-            log::info!("media: art {label}: downscale=failed bytes={length} using original");
-          }
-          (bytes, source_mime, false)
-        }
-        None => {
-          if debug {
-            log::info!("media: art {label}: downscale=failed bytes={length} too large result=null");
-          }
-          return None;
-        }
-      }
-    } else {
-      (bytes, source_mime, false)
-    };
-
-    let url = format!("data:{mime};base64,{}", base64_encode(&output));
+    let format = sniff_art_format(&bytes);
     if debug {
       log::info!(
-        "media: art {label}: downscale={downscaled} result=url ({} bytes)",
-        output.len()
+        "media: art {label}: sniffed={} contentType={content_type}",
+        format.map(ArtFormat::mime).unwrap_or("unknown")
+      );
+    }
+
+    // MIME comes from the magic bytes, never from SMTC's ContentType(). Native
+    // PNG/JPEG go through unchanged (unless oversized); every other recognised
+    // format is re-encoded as a 256 px JPEG; unrecognised bytes are decoded and
+    // re-encoded as PNG, or dropped when they are not a decodable image.
+    let prepared: Option<(Vec<u8>, &'static str)> = match format {
+      Some(fmt) if fmt.is_native() => {
+        if length > ART_DOWNSCALE_BYTES {
+          match downscale_jpeg(&bytes) {
+            Some(jpeg) => Some((jpeg, "image/jpeg")),
+            None if length < ART_MAX_ORIGINAL_BYTES => {
+              if debug {
+                log::info!("media: art {label}: downscale=failed bytes={length} using original");
+              }
+              Some((bytes, fmt.mime()))
+            }
+            None => {
+              if debug {
+                log::info!(
+                  "media: art {label}: downscale=failed bytes={length} too large result=null"
+                );
+              }
+              None
+            }
+          }
+        } else {
+          Some((bytes, fmt.mime()))
+        }
+      }
+      Some(_) => match downscale_jpeg(&bytes) {
+        Some(jpeg) => Some((jpeg, "image/jpeg")),
+        None => {
+          if debug {
+            log::info!("media: art {label}: jpeg re-encode failed result=null");
+          }
+          None
+        }
+      },
+      None => match reencode_png(&bytes) {
+        Some(png) => Some((png, "image/png")),
+        None => {
+          if debug {
+            log::info!("media: art {label}: unrecognised bytes undecodable result=null");
+          }
+          None
+        }
+      },
+    };
+
+    let Some((output, mime)) = prepared else {
+      return None;
+    };
+
+    let url = art_data_url(mime, &output);
+    if debug {
+      let preview: String = url.chars().take(40).collect();
+      log::info!(
+        "media: art {label}: data-url length={} head={preview}",
+        url.len()
       );
     }
     Some(url)
@@ -1312,6 +1453,15 @@ mod tests {
     assert_eq!(session_class("MSEdge.exe"), SESSION_CLASS_BROWSER);
     assert_eq!(session_class("Vivaldi.exe"), SESSION_CLASS_BROWSER);
     assert_eq!(session_class("C:\\Program Files\\VLC\\vlc.exe"), SESSION_CLASS_OTHER);
+  }
+
+  #[test]
+  fn compact_bar_uses_music_app_classification() {
+    assert!(is_music_app("SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify", None));
+    assert!(is_music_app("AppleMusic.exe", None));
+    assert!(!is_music_app("MSEdge.exe", Some("")));
+    assert!(is_music_app("MSEdge.exe", Some("Album Name")));
+    assert!(!is_music_app("VLC.exe", Some("Album Name")));
   }
 
   #[test]
@@ -1453,6 +1603,74 @@ mod tests {
   }
 
   #[test]
+  fn art_format_is_sniffed_from_magic_bytes() {
+    assert_eq!(sniff_art_format(&[0x89, b'P', b'N', b'G', 1]), Some(ArtFormat::Png));
+    assert_eq!(sniff_art_format(&[0xFF, 0xD8, 0xFF, 1]), Some(ArtFormat::Jpeg));
+    assert_eq!(sniff_art_format(b"GIF89a..."), Some(ArtFormat::Gif));
+    assert_eq!(sniff_art_format(b"BM\x00\x00"), Some(ArtFormat::Bmp));
+    assert_eq!(
+      sniff_art_format(b"RIFF\x00\x00\x00\x00WEBPVP8 "),
+      Some(ArtFormat::WebP)
+    );
+    assert_eq!(sniff_art_format(&[]), None);
+    assert_eq!(sniff_art_format(b"image/jpeg bytes"), None);
+    // RIFF with a non-WebP form type is not WebP.
+    assert_eq!(sniff_art_format(b"RIFF\x00\x00\x00\x00WAVEfmt "), None);
+  }
+
+  #[test]
+  fn native_formats_have_their_own_mime_and_are_not_reencoded() {
+    assert_eq!(ArtFormat::Png.mime(), "image/png");
+    assert_eq!(ArtFormat::Jpeg.mime(), "image/jpeg");
+    assert_eq!(ArtFormat::Gif.mime(), "image/gif");
+    assert_eq!(ArtFormat::Bmp.mime(), "image/bmp");
+    assert_eq!(ArtFormat::WebP.mime(), "image/webp");
+    assert!(ArtFormat::Png.is_native());
+    assert!(ArtFormat::Jpeg.is_native());
+    assert!(!ArtFormat::Gif.is_native());
+    assert!(!ArtFormat::Bmp.is_native());
+    assert!(!ArtFormat::WebP.is_native());
+  }
+
+  #[test]
+  fn gif_is_reencoded_as_a_256px_jpeg() {
+    let mut bytes = Vec::new();
+    image::RgbImage::from_fn(512, 256, |x, y| image::Rgb([x as u8, y as u8, 0]))
+      .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Gif)
+      .expect("gif encode");
+    assert_eq!(sniff_art_format(&bytes), Some(ArtFormat::Gif));
+
+    let jpeg = downscale_jpeg(&bytes).expect("jpeg encode");
+    assert_eq!(sniff_art_format(&jpeg), Some(ArtFormat::Jpeg));
+    let decoded = image::load_from_memory(&jpeg).expect("jpeg decode");
+    assert_eq!((decoded.width(), decoded.height()), (256, 128));
+  }
+
+  #[test]
+  fn unknown_bytes_are_reencoded_as_png_or_dropped() {
+    // Unrecognised-but-decodable bytes take the PNG fallback path; a BMP body
+    // is used here because its decoded pixels are easy to verify.
+    let mut bmp = Vec::new();
+    image::RgbImage::from_fn(16, 16, |x, y| image::Rgb([x as u8, y as u8, 128]))
+      .write_to(&mut std::io::Cursor::new(&mut bmp), image::ImageFormat::Bmp)
+      .expect("bmp encode");
+    assert_eq!(sniff_art_format(&bmp), Some(ArtFormat::Bmp));
+
+    let png = reencode_png(&bmp).expect("png encode");
+    assert_eq!(sniff_art_format(&png), Some(ArtFormat::Png));
+    assert!(reencode_png(b"not an image").is_none());
+  }
+
+  #[test]
+  fn data_url_has_the_exact_required_shape() {
+    assert_eq!(art_data_url("image/png", b"f"), "data:image/png;base64,Zg==");
+    assert_eq!(
+      art_data_url("image/jpeg", b"foobar"),
+      "data:image/jpeg;base64,Zm9vYmFy"
+    );
+  }
+
+  #[test]
   fn base64_matches_rfc4648_vectors() {
     assert_eq!(base64_encode(b""), "");
     assert_eq!(base64_encode(b"f"), "Zg==");
@@ -1515,6 +1733,8 @@ mod tests {
       position_ms: 1_000,
       duration_ms: Some(200_000),
       art_data_url: None,
+      is_music_app: true,
+      album_title: None,
       captured_at_ms: 10,
     }
   }

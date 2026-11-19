@@ -5,6 +5,7 @@ import {
   type CalendarProvider,
   type Note,
   type NotchSettings,
+  type PowerState,
   type Track,
 } from "./types";
 
@@ -16,6 +17,8 @@ const tracks: Track[] = [
     source: "Spotify",
     duration: 242,
     colors: ["#ff9a5a", "#d04a7d", "#553087"],
+    isMusicApp: true,
+    albumTitle: null,
   },
   {
     id: "afterglow",
@@ -24,6 +27,8 @@ const tracks: Track[] = [
     source: "YouTube",
     duration: 213,
     colors: ["#df506f", "#7347a4", "#232c6b"],
+    isMusicApp: true,
+    albumTitle: null,
   },
   {
     id: "blue-hour",
@@ -32,6 +37,8 @@ const tracks: Track[] = [
     source: "Apple Music",
     duration: 268,
     colors: ["#4ac0b9", "#286e9e", "#3d285f"],
+    isMusicApp: true,
+    albumTitle: null,
   },
 ];
 
@@ -238,4 +245,9 @@ export const settingsService = {
   save: async (settings: NotchSettings): Promise<void> => {
     localStorage.setItem(MOCK_SETTINGS_KEY, JSON.stringify(settings));
   },
+};
+
+/** No power events in the browser prototype. */
+export const powerService = {
+  subscribe: async (_handler: (state: PowerState) => void): Promise<() => void> => () => {},
 };

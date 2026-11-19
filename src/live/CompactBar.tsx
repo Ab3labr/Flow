@@ -1,26 +1,49 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { CalendarDays, Clock, Mic, Music, Timer } from "lucide-react";
+import { Battery, CalendarDays, Clock, Mic, Music, Pause, Timer, Zap } from "lucide-react";
 import { useCallback, useLayoutEffect, useRef } from "react";
-import { Equalizer } from "../components/CollapsedPill";
+import { Equalizer } from "./Equalizer";
+import {
+  COMPACT_BAR_HEIGHT,
+  COMPACT_BAR_MAX_WIDTH,
+  COMPACT_BAR_MIN_WIDTH,
+  COMPACT_BAR_WINDOW_MARGIN,
+} from "./geometry";
 import { useDominantColor } from "./useDominantColor";
 import type { LiveActivity, LiveLeading, LiveTrailing } from "./types";
 
-export const COMPACT_BAR_HEIGHT = 30;
-export const COMPACT_BAR_MIN_WIDTH = 150;
-export const COMPACT_BAR_MAX_WIDTH = 260;
-/** Bar + window margin used by Rust `set_ui_mode("pill")`. */
-export const COMPACT_BAR_WINDOW_MARGIN = { x: 32, y: 18 } as const;
+export {
+  COMPACT_BAR_HEIGHT,
+  COMPACT_BAR_MAX_WIDTH,
+  COMPACT_BAR_MIN_WIDTH,
+  COMPACT_BAR_WINDOW_MARGIN,
+} from "./geometry";
 
 const FALLBACK_ACCENT = "#f09ab7";
+const RING_CIRCUMFERENCE = 2 * Math.PI * 6;
 
 const LEADING_ICONS: Record<string, typeof Music> = {
   music: Music,
   recording: Mic,
   timer: Timer,
+  "timer-done": Timer,
   meeting: CalendarDays,
+  charging: Zap,
+  battery: Battery,
 };
 
-function Leading({ leading }: { leading: LiveLeading }) {
+function Leading({
+  leading,
+  playing,
+  color,
+  dimmed,
+  reducedMotion,
+}: {
+  leading: LiveLeading;
+  playing: boolean;
+  color: string;
+  dimmed: boolean;
+  reducedMotion: boolean;
+}) {
   if (leading.type === "image") {
     return (
       <img
@@ -44,10 +67,77 @@ function Leading({ leading }: { leading: LiveLeading }) {
       </span>
     );
   }
+  if (leading.type === "recordingDot") {
+    return (
+      <span className={`relative grid h-5 w-5 shrink-0 place-items-center ${dimmed ? "opacity-60" : ""}`}>
+        <motion.span
+          className="absolute h-2.5 w-2.5 rounded-full"
+          style={{ backgroundColor: leading.color }}
+          animate={{ opacity: [0.55, 0, 0.55], scale: [1, 2, 1] }}
+          transition={{
+            duration: reducedMotion ? 0 : 1.8,
+            repeat: reducedMotion ? 0 : Infinity,
+          }}
+        />
+        <span
+          className="relative h-2.5 w-2.5 rounded-full"
+          style={{ backgroundColor: leading.color }}
+        />
+      </span>
+    );
+  }
+  if (leading.type === "ring") {
+    const progress = Math.max(0, Math.min(1, leading.progress));
+    return (
+      <span className={`relative grid h-5 w-5 shrink-0 place-items-center ${dimmed ? "opacity-60" : ""}`}>
+        <svg className="absolute h-[14px] w-[14px] -rotate-90" viewBox="0 0 16 16">
+          <circle cx="8" cy="8" r="6" fill="none" stroke="rgba(255,255,255,.16)" strokeWidth="2" />
+          <motion.circle
+            cx="8"
+            cy="8"
+            r="6"
+            fill="none"
+            stroke={color}
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeDasharray={RING_CIRCUMFERENCE}
+            animate={{ strokeDashoffset: RING_CIRCUMFERENCE * (1 - progress) }}
+            transition={{ duration: reducedMotion ? 0.15 : 0.3, ease: "easeOut" }}
+          />
+        </svg>
+        {!playing && (
+          <Pause className="relative h-2.5 w-2.5 fill-white text-white" strokeWidth={2} />
+        )}
+      </span>
+    );
+  }
+  if (leading.type === "pulse") {
+    const Icon = LEADING_ICONS[leading.name.toLowerCase()] ?? Timer;
+    return (
+      <motion.span
+        className="grid h-5 w-5 shrink-0 place-items-center rounded-[6px] bg-white/10"
+        animate={{ scale: [1, 1.35, 1], opacity: [0.5, 1, 0.5] }}
+        transition={{
+          duration: reducedMotion ? 0 : 1.5,
+          repeat: reducedMotion ? 0 : Infinity,
+        }}
+      >
+        <Icon
+          className="h-3 w-3"
+          style={{ color: leading.color ?? color }}
+          strokeWidth={1.8}
+        />
+      </motion.span>
+    );
+  }
   const Icon = LEADING_ICONS[leading.name.toLowerCase()] ?? Music;
   return (
     <span className="grid h-5 w-5 shrink-0 place-items-center rounded-[6px] bg-white/10">
-      <Icon className="h-3 w-3 text-white/80" strokeWidth={1.8} />
+      <Icon
+        className="h-3 w-3 text-white/80"
+        style={{ color: leading.color }}
+        strokeWidth={1.8}
+      />
     </span>
   );
 }
@@ -61,6 +151,16 @@ function Trailing({
   playing: boolean;
   color: string;
 }) {
+  if (typeof trailing === "object") {
+    return (
+      <span
+        className="shrink-0 text-[11px] font-medium tabular-nums"
+        style={{ color: trailing.color }}
+      >
+        {trailing.value}
+      </span>
+    );
+  }
   if (trailing === "equalizer") return <Equalizer playing={playing} color={color} />;
   if (trailing === "dot") {
     return (
@@ -72,6 +172,9 @@ function Trailing({
   }
   if (trailing === "time") {
     return <Clock className="h-3 w-3 shrink-0" style={{ color }} strokeWidth={1.8} />;
+  }
+  if (trailing === "pause") {
+    return <Pause className="h-3 w-3 shrink-0 fill-white/55 text-white/55" strokeWidth={2} />;
   }
   return null;
 }
@@ -85,12 +188,15 @@ export function CompactBar({
   onWidthChange: (width: number) => void;
   onClick: () => void;
 }) {
-  const reducedMotion = useReducedMotion();
+  const reducedMotion = Boolean(useReducedMotion());
   const barRef = useRef<HTMLDivElement>(null);
   const playing = activity.playing ?? false;
   const artColor = activity.leading.type === "image" ? activity.leading.url : null;
   const dominant = useDominantColor(artColor);
   const color = dominant ?? activity.accent ?? FALLBACK_ACCENT;
+  const maxWidth = activity.maxWidth ?? COMPACT_BAR_MAX_WIDTH;
+  const dimmed = activity.kind === "timer" && !playing;
+  const customContent = activity.render?.({ activity, playing, color, maxWidth });
 
   const reportWidth = useCallback(() => {
     // offsetWidth is the layout width; getBoundingClientRect is affected by
@@ -108,6 +214,8 @@ export function CompactBar({
     return () => observer.disconnect();
   }, [reportWidth]);
 
+  const revealActionsOnHover = activity.hover === "actions";
+
   return (
     <div
       ref={barRef}
@@ -121,7 +229,8 @@ export function CompactBar({
           onClick();
         }
       }}
-      className="relative flex h-[30px] w-max min-w-[150px] max-w-[260px] cursor-pointer items-center gap-1.5 rounded-b-[15px] bg-black pl-1.5 pr-2.5 outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+      className="group relative flex h-[30px] w-max shrink-0 cursor-pointer items-center gap-1.5 rounded-b-[15px] bg-black pl-1.5 pr-2.5 outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+      style={{ minWidth: COMPACT_BAR_MIN_WIDTH, maxWidth }}
     >
       <motion.div
         aria-hidden="true"
@@ -139,25 +248,63 @@ export function CompactBar({
         }
       />
 
-      <Leading leading={activity.leading} />
+      {customContent ?? (
+        <>
+          <Leading
+            leading={activity.leading}
+            playing={playing}
+            color={color}
+            dimmed={dimmed}
+            reducedMotion={reducedMotion}
+          />
 
-      <div className="relative min-w-0 flex-1 overflow-hidden">
-        <AnimatePresence mode="popLayout" initial={false}>
-          <motion.span
-            key={`${activity.id}-${activity.label}`}
-            className="block truncate text-[11px] font-medium leading-none text-white"
-            initial={{ opacity: 0, x: 5 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -5 }}
-            transition={{ duration: reducedMotion ? 0.15 : 0.26, ease: "easeOut" }}
-          >
-            {activity.label}
-          </motion.span>
-        </AnimatePresence>
-      </div>
+          <div className="relative min-w-0 flex-1 overflow-hidden">
+            <AnimatePresence mode="popLayout" initial={false}>
+              <motion.span
+                key={`${activity.id}-${activity.label}`}
+                className={`block truncate text-[11px] font-medium leading-none ${
+                  activity.kind === "timer" || activity.kind === "recording" ? "tabular-nums" : ""
+                } ${dimmed ? "text-white/50" : "text-white"}`}
+                initial={{ opacity: 0, x: 5 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -5 }}
+                transition={{ duration: reducedMotion ? 0.15 : 0.26, ease: "easeOut" }}
+              >
+                {activity.label}
+              </motion.span>
+            </AnimatePresence>
+          </div>
 
-      {activity.trailing && activity.trailing !== "none" && (
-        <Trailing trailing={activity.trailing} playing={playing} color={color} />
+          {activity.trailing && activity.trailing !== "none" && (
+            <Trailing trailing={activity.trailing} playing={playing} color={color} />
+          )}
+
+          {activity.actions?.length ? (
+            <div
+              className={`flex shrink-0 items-center gap-1 ${
+                revealActionsOnHover
+                  ? "pointer-events-none opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+                  : ""
+              }`}
+            >
+              {activity.actions.map((action) => (
+                <button
+                  key={action.id}
+                  type="button"
+                  aria-label={action.label}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    action.onClick();
+                  }}
+                  onKeyDown={(event) => event.stopPropagation()}
+                  className="grid shrink-0 place-items-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+                >
+                  {action.icon}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </>
       )}
     </div>
   );

@@ -13,11 +13,12 @@ the Tauri shell works.
 ## Panel open/close (Notch.tsx)
 
 State: `expanded`, `pinned`, `tab`, timers (`hoverTimer`, `leaveTimer`,
-`completionTimer`, `reminderTimer`).
+`completionTimer`, `dissolveTimer`), plus the shared live-activity store with
+per-transient TTL timers.
 
 ### Open triggers
 - **Hot zone:** `openFromEdge()` — pointer entering the top edge strip
-  (`topEdge` setting, only when closed and no live pill) starts a
+  (`topEdge` setting, only when closed and no live bar) starts a
   **180 ms** timer, then `setExpanded(true)`.
 - **Double-Alt:** two Alt presses within **350 ms**, no other key between,
   toggles. Requires `settings.altAlt` and `settings.shortcut === "Alt Alt"`.
@@ -26,7 +27,7 @@ State: `expanded`, `pinned`, `tab`, timers (`hoverTimer`, `leaveTimer`,
 - **Custom shortcut:** `settings.shortcut` (e.g. `Ctrl + Alt + F`) matched
   from modifiers + key name (`Ctrl/Alt/Shift/Meta`, `Space`, single chars
   uppercased, `Control`→`Ctrl`). Opens **pinned**; closes if expanded.
-- **Live pill click:** expands the panel and clears the reminder timeout.
+- **Compact bar click:** expands the panel pinned on the activity's `expandTab`.
 
 ### Close paths
 - **Hover close:** pointer leave of strip/panel, not pinned → **400 ms**
@@ -37,46 +38,72 @@ State: `expanded`, `pinned`, `tab`, timers (`hoverTimer`, `leaveTimer`,
 - **Outside pointerdown:** `close()` (also clears pin). In Tauri the
   webview won't see outside clicks — Rust must emit close on blur.
 
-### Live pill
-Collapsed sizes: `120x4` invisible sliver (opacity 0) or `108x26` pill when
-`livePill = recording || timerComplete || reminderEvent`.
-
-- **Recording:** pulsing red dot (`#ff453a`, 0.55→0→0.55 opacity, scale
-  1→2, 1.8 s) + elapsed `M:SS`.
-- **Timer done:** pulsing TimerIcon (scale 1→1.35→1, opacity .5→1→.5,
-  1.5 s) + "Timer done"; auto-hides after **3000 ms**.
-- **Meeting reminder:** "{title} in 5 min" + compact JoinButton. Event
-  starting in `(0, 5 min]` with a meeting link → wait **900 ms** → show →
-  hide after **6000 ms** (re-armed on pointer leave). Same event id never
-  re-shows.
-
-Pill precedence: recording > timerComplete > reminder. Hover/click on pill
-expands panel.
-
-### Compact live bar (Phase 3D)
-A reusable activity bar for music (recording/timer/reminder still use their
-own pills). It appears only when `compactBar` is on, the panel is closed, an
+### Compact live bar (single live surface)
+The old `108x26` live pill is gone. Music, recording, timer, timer-done,
+meeting reminders and charging are all `LiveActivity` slots rendered by the
+same bar.
+Collapsed states are the `120x4` invisible sliver (opacity 0) or the bar
+itself. It appears only when master `compactBar` is on, the panel is closed, an
 activity exists, and no fullscreen app is in front while `hideInFullscreen` is
-on. Bar: height **30**, width fits content **150-260**, bottom radius **15**,
-flush to the top edge, `bg-black`, panel shadow. Leading slot 20x20 radius 6
-(art, app initial on the track gradient, or icon); label 11px medium, one line,
-ellipsis; trailing 3-bar equalizer in the art's dominant colour (fallback
-`#f09ab7`), flat when paused. A soft glow sits under the bar in the same colour
-(28% max, 8px blur, 3 s pulse while playing, static when paused).
+on. Bar: height **30**, content-fit width **120–260** (or the activity's
+`maxWidth`), bottom radius **15**, flush to the top edge, `bg-black`, panel
+shadow. Leading slot 20x20 radius 6 (art, app initial on the track gradient,
+icon (including charging bolt/battery), timer ring, recording dot or pulse);
+label 11px medium, one line, ellipsis; trailing equalizer/dot/time/pause/text
+in the activity colour (fallback `#f09ab7`). A soft glow sits under the bar
+in the same colour (28% max, 8px
+blur, 3 s pulse while playing, static when paused).
 
-Music is an activity while the shown session plays. A pause keeps it for
-**3000 ms** with flat bars, then removes it; resuming re-adds it. Hover opens
-the panel on Home unpinned, click opens it pinned, and closing the panel while
-music plays returns to the bar. Motion: the panel container springs
-380/30/0.9 from the 120x4 sliver; content fades in from 6px blur; titles
-crossfade with a 5px slide (260 ms). Reduced motion uses 150 ms fades.
-Priorities: recording 100, timer done 90, meeting reminder 80, music 10.
+An activity carries `mode: "persistent" | "transient"`, `ttlMs` for transients,
+`priority`, `hover: "expand" | "actions" | "none"`, optional `actions`,
+`expandTab`, `maxWidth` and an optional `render` override. Picking rules: any
+live transient beats every persistent; within each group the highest priority
+wins; ties go to the most recently registered activity. When a transient
+expires the store removes it, so the bar falls back to the best persistent
+activity or retracts to the sliver.
+
+- **Recording:** persistent, priority **100**. Pulsing red dot `#ff453a`
+  (0.55→0→0.55 opacity, scale 1→2, 1.8 s) + elapsed `MM:SS` (`H:MM:SS` after
+  an hour), tabular numerals. Hover reveals a small stop button; clicking the
+  rest opens the Capture tab pinned.
+- **Charging:** transient, priority **95**, **4000 ms**, `hover: "none"`.
+  Rust polls `GetSystemPowerStatus` every 2 s and emits `power-state` only on
+  an AC or percent change held for 1 s, never at startup. Plug → green bolt
+  (`#30d158`) and "Charging" ("Charged" at 100%); unplug → battery icon,
+  "Battery", red (`#ff453a`) at 20% or less. Trailing text is the percentage
+  (`—` when unknown). Percent-only updates refresh the visible slot without
+  restarting its 4 s lifetime. Controlled live by `compactCharging`.
+- **Timer:** persistent, priority **60**. 14px remaining/total ring + `M:SS`;
+  paused is dimmed with a pause icon. Hover expands to Timer. `maxWidth` 170.
+- **Timer done:** transient, priority **90**, **5000 ms**. Preserved pulse
+  (scale 1→1.35→1, opacity .5→1→.5, 1.5 s) + "Timer done".
+- **Meeting reminder:** transient, priority **80**, **6000 ms**. "{title} in
+  5 min" + compact JoinButton. Event starting in `(0, 5 min]` with a meeting
+  link → wait **900 ms** → show → expire after 6000 ms. Same event id never
+  re-shows.
+- **Music:** persistent, priority **10**, unchanged. It registers only while
+  the shown session plays; a pause keeps it for **3000 ms** with flat bars,
+  then removes it.
+
+Hover expands only for `hover: "expand"` activities; `actions` reveals the
+stop control and `none` does neither. Click opens the panel pinned on
+`expandTab`, and closing the panel while any persistent activity is alive
+returns to the bar. **Timer Start** and **Capture Record** dissolve the panel
+into the bar after **450 ms** when that activity's compact toggle is on; with
+the toggle off the panel stays open as before.
+
+Motion: the panel and bar are two overlapping layers of one container. Width,
+height and bottom radius use the same 380/30/0.9 spring in both directions, so
+the panel morphs directly into the bar (and back) without visiting the 120x4
+sliver. Outgoing content fades and scales out while incoming content fades in
+from 6px blur; titles crossfade with a 5px slide (260 ms). Reduced motion uses
+150 ms fades with no blur/scale.
 
 ### Panel geometry
 Expanded: width **480**, height per tab — home 172, timer 250, calendar
 230, capture 185, settings 340, notes dynamic 172→340. Top-center,
 top-anchored, `bg-black`, `overflow-hidden`, shadow
-`0 12px 34px rgba(0,0,0,.36)` when open or pill.
+`0 12px 34px rgba(0,0,0,.36)` when open or bar.
 
 ## Tabs (TopBar)
 Left icons: Home, Timer, Calendar, Notes, Capture; Settings pinned right.
@@ -131,7 +158,8 @@ Content `mt-1.5`, `AnimatePresence mode="wait"` per tab: enter opacity
   remembered (max 3, MRU; mock localStorage `notch-custom-times`) + "+1 min"
   while running; Start/Pause/Restart `h-9 rounded-full bg-white
   text-[12px] font-semibold text-black`.
-- Complete: ring pulse (scale 1→1.05→1, brightness 1→1.5→1) + 3 s pill.
+- Complete: ring pulse (scale 1→1.05→1, brightness 1→1.5→1) + 5 s
+  `timer-done` compact activity.
 
 ### CalendarView
 - `h-[178px]`.
@@ -178,7 +206,8 @@ Content `mt-1.5`, `AnimatePresence mode="wait"` per tab: enter opacity
 - **Record:** idle red ring (`h-6 w-6 border-[5px] border-[#ff453a]`) +
   "Record"; recording: pulsing glow (`h-14 w-14 bg-[#ff453a]/15 blur-xl`,
   .35→.85→.35, .8→1.25→.8, 1.7 s) + filled Square + `MM:SS` tabular.
-  Mock: 1 s interval counter in Notch state.
+  Mock: 1 s interval counter in Notch state; Record dissolves into the
+  compact bar after 450 ms when `compactRecording` is on.
 
 ### SettingsView
 - Scroll `h-[288px]` (`notch-scroll`).
@@ -193,11 +222,16 @@ Content `mt-1.5`, `AnimatePresence mode="wait"` per tab: enter opacity
   label, off = `#2a2a2a` track + 1 px `#444444` inset outline + `#8a8a8a` knob
   at x 3 + `white/50` label; spring 500/32, `whileTap 0.94`, brighter track on
   hover, `role="switch"`, `aria-checked`, focus-visible ring, Space/Enter.
+- "COMPACT BAR" section: master `compactBar` ("Show compact bar") plus
+  indented children `compactMusic`, `compactTimer`, `compactRecording`,
+  `compactCharging` (Music/Timer/Recording/Charging). Children dim when the
+  master is off; all toggles apply live.
 - "CALENDARS" + "＋ Add" → connect sheet; account rows; "Notes folder"
   `h-9 rounded-xl bg-[#121212] px-2.5` label + path ("Documents\Notch
   Notes" mock text — spec folder is `Documents\Float Notes`) + "Open folder"
   pill (inert → Explorer).
-- Settings are React state only; real: `%APPDATA%\Float\settings.json`.
+- Settings apply live through `settingsService`; real:
+  `%APPDATA%\Float\settings.json`.
 
 ## Meeting links
 `getMeetingProvider` scans `location + description` for
@@ -209,8 +243,9 @@ scale 1→1.08, 3.8 s). Join is inert — real: open URL. `live` = mock flag;
 real: `startsAt <= now < endsAt`.
 
 ## Animation constants (do not regress)
-- Open: spring 380/30/0.9. Close/pill: height+width delay .1 dur .22;
-  opacity delay .18 (0 for pill) dur .15.
+- Surface changes: spring 380/30/0.9 for width/height/radius in both
+  directions; opacity fades in .22. Rust holds the source window on collapse
+  and grows before expansion, then applies one final stable size.
 - Content enter delay .13 dur .24 ease [.22,1,.36,1]; exit .12.
 - Tab switch .22 same ease. Tab pill spring 420/32. Press .92 spring
   600/30. Toggle knob 500/32.
@@ -219,7 +254,7 @@ real: `startsAt <= now < endsAt`.
 ## Prototype-only / known gaps
 See docs/GAP_ANALYSIS.md for the full fake→real mapping. Highlights:
 lyrics/Output-device/Join/Snip/Open-folder inert; "Demo:" toggles;
-`CollapsedPill` unused; hardcoded "WED, 4 NOV"; events list doesn't refresh
+hardcoded "WED, 4 NOV"; events list doesn't refresh
 with time; stale `accountCount` in connect sheet; no error boundary;
 `Track.source` is a 3-name union; `CalendarEvent.detail` preformatted;
 services synchronous mock-only; fake desktop in App.tsx; Google Fonts +

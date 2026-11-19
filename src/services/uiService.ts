@@ -2,8 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauriApp } from "./env";
+import { planKey, type WindowPlan } from "../live/windowTransition";
 
 export type UiMode = "idle" | "pill" | "open";
+export type UiPhase = "stable" | "expanding" | "collapsing";
 
 export type OpenRequest = {
   tab?: string;
@@ -13,22 +15,44 @@ export type OpenRequest = {
 
 export type CloseRequest = { source?: "alt" | "esc" | "outside" };
 
-export function setUiMode(
-  mode: UiMode,
-  panelHeight: number,
-  pinned = false,
-  barWidth = 108,
-  barHeight = 26,
-): void {
+/**
+ * One command owns all window geometry. The plan already carries the mode
+ * Rust should apply right now (source during a collapse, target during an
+ * expansion) and the phase that decides input/visibility.
+ */
+let lastPlanKey: string | null = null;
+
+export function setUiMode(plan: WindowPlan): void {
   if (!isTauriApp) return;
+  const key = planKey(plan);
+  if (key === lastPlanKey) return;
+  lastPlanKey = key;
   void invoke("set_ui_mode", {
-    mode,
-    panelHeight,
-    pinned,
-    barWidth,
-    barHeight,
+    mode: plan.mode,
+    phase: plan.phase,
+    panelHeight: plan.panelHeight,
+    pinned: plan.pinned,
+    barWidth: plan.barWidth,
+    barHeight: plan.barHeight,
   }).catch((error) => {
+    // Allow a retry if the command failed; Rust also dedupes at the API layer.
+    lastPlanKey = null;
     console.error("set_ui_mode failed", error);
+  });
+}
+
+/**
+ * Sends a webview log line through tauri-plugin-log's existing `log` command
+ * (levels: 4 = warn, 5 = error). Falls back to the browser console in mock
+ * mode or if the command is unavailable.
+ */
+export function logWebview(message: string, level: 4 | 5 = 4): void {
+  if (!isTauriApp) {
+    console.warn(message);
+    return;
+  }
+  void invoke("plugin:log|log", { level, message }).catch(() => {
+    console.warn(message);
   });
 }
 

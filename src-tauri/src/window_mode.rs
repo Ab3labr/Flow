@@ -1,4 +1,5 @@
-//! Window model (docs/ARCHITECTURE.md): idle / pill / open geometry.
+//! Window model (docs/ARCHITECTURE.md): idle / pill / open geometry plus the
+//! expanding / collapsing / stable handshake used by the shared container.
 //!
 //! The frontend reports the desired mode; Rust owns size, position and
 //! click-through. Geometry is pure so DPI behaviour is unit-tested.
@@ -131,6 +132,26 @@ pub enum UiMode {
   Open,
 }
 
+/// Frontend/Rust handshake for a morph. Expanding grows before content moves;
+/// collapsing holds the source geometry until Motion has settled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiPhase {
+  Stable,
+  Expanding,
+  Collapsing,
+}
+
+impl UiPhase {
+  /// Missing or unknown phases are stable, so older frontends still work.
+  pub fn parse(value: Option<&str>) -> Self {
+    match value.unwrap_or("stable") {
+      "expanding" => Self::Expanding,
+      "collapsing" => Self::Collapsing,
+      _ => Self::Stable,
+    }
+  }
+}
+
 impl UiMode {
   pub fn parse(value: &str) -> Result<Self, String> {
     match value {
@@ -170,6 +191,27 @@ pub struct WindowRect {
   pub height: u32,
 }
 
+/// Last geometry actually applied to the WebviewWindow. Used to drop repeated
+/// `set_ui_mode` calls from ResizeObserver and animation completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AppliedGeometry {
+  rect: WindowRect,
+  phase: UiPhase,
+  ignore_cursor: bool,
+  visible: bool,
+  open: bool,
+  pinned: bool,
+}
+
+static APPLIED: Mutex<Option<AppliedGeometry>> = Mutex::new(None);
+
+fn lock_applied() -> std::sync::MutexGuard<'static, Option<AppliedGeometry>> {
+  match APPLIED.lock() {
+    Ok(guard) => guard,
+    Err(poisoned) => poisoned.into_inner(),
+  }
+}
+
 /// Physical-px rect centered on the monitor's top edge.
 pub fn window_rect(
   mode: UiMode,
@@ -199,6 +241,7 @@ pub fn apply(
   window: &WebviewWindow,
   state: &AppState,
   mode: UiMode,
+  phase: UiPhase,
   panel_height: f64,
   bar_width: f64,
   bar_height: f64,
@@ -231,32 +274,65 @@ pub fn apply(
     monitor.scale_factor(),
   );
 
+  // During a morph the source window is held and made click-through, so no
+  // large transparent rectangle steals clicks from the desktop behind it.
+  let (ignore_cursor, visible) = match phase {
+    UiPhase::Stable => match mode {
+      UiMode::Idle => (true, false),
+      UiMode::Pill | UiMode::Open => (false, true),
+    },
+    UiPhase::Expanding | UiPhase::Collapsing => (true, mode != UiMode::Idle),
+  };
+  let open = mode == UiMode::Open;
+  let pinned_state = if open {
+    if phase == UiPhase::Stable {
+      pinned
+    } else {
+      pinned || state.is_pinned()
+    }
+  } else {
+    false
+  };
+
+  let desired = AppliedGeometry {
+    rect,
+    phase,
+    ignore_cursor,
+    visible,
+    open,
+    pinned: pinned_state,
+  };
+  let unchanged = {
+    let mut applied = lock_applied();
+    if *applied == Some(desired) {
+      true
+    } else {
+      *applied = Some(desired);
+      false
+    }
+  };
+  if unchanged {
+    return Ok(());
+  }
+
   window
     .set_size(PhysicalSize::new(rect.width, rect.height))
     .map_err(|err| err.to_string())?;
   window
     .set_position(PhysicalPosition::new(rect.x, rect.y))
     .map_err(|err| err.to_string())?;
-
-  match mode {
-    UiMode::Idle => {
-      window
-        .set_ignore_cursor_events(true)
-        .map_err(|err| err.to_string())?;
-      window.hide().map_err(|err| err.to_string())?;
-    }
-    UiMode::Pill | UiMode::Open => {
-      window
-        .set_ignore_cursor_events(false)
-        .map_err(|err| err.to_string())?;
-      window.show().map_err(|err| err.to_string())?;
-    }
+  window
+    .set_ignore_cursor_events(ignore_cursor)
+    .map_err(|err| err.to_string())?;
+  if visible {
+    window.show().map_err(|err| err.to_string())?;
+  } else {
+    window.hide().map_err(|err| err.to_string())?;
   }
 
   PANEL_CLOSED.store(mode == UiMode::Idle, Ordering::Relaxed);
-  let open = mode == UiMode::Open;
   let was_open = state.is_open();
-  state.set(open, open && pinned, panel_height, panel);
+  state.set(open, pinned_state, panel_height, panel);
   if was_open != open {
     // Re-arm the double-Alt tracker: a missed Alt-up cannot leave it stuck.
     crate::triggers::reset_alt_tracker(if open { "panel opened" } else { "panel closed" });
@@ -274,11 +350,13 @@ pub fn set_ui_mode(
   bar_width: f64,
   bar_height: f64,
   pinned: bool,
+  phase: Option<String>,
 ) -> Result<(), String> {
   apply(
     &window,
     state.inner(),
     UiMode::parse(&mode)?,
+    UiPhase::parse(phase.as_deref()),
     panel_height,
     bar_width,
     bar_height,
@@ -351,6 +429,15 @@ mod tests {
   fn rejects_unknown_mode() {
     assert!(UiMode::parse("open").is_ok());
     assert!(UiMode::parse("closed").is_err());
+  }
+
+  #[test]
+  fn phases_default_to_stable_for_older_frontends() {
+    assert_eq!(UiPhase::parse(None), UiPhase::Stable);
+    assert_eq!(UiPhase::parse(Some("stable")), UiPhase::Stable);
+    assert_eq!(UiPhase::parse(Some("expanding")), UiPhase::Expanding);
+    assert_eq!(UiPhase::parse(Some("collapsing")), UiPhase::Collapsing);
+    assert_eq!(UiPhase::parse(Some("unknown")), UiPhase::Stable);
   }
 
   #[test]

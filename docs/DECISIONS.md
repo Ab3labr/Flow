@@ -12,15 +12,24 @@ UI/UX
 - iCloud provider row hidden. ICS covers it.
 - Calendar tab "+ Add" opens a new minimal add-event sheet; connecting calendars lives in Settings and the empty state.
 - "Demo:" toggles exist in mock mode only.
-- Recording pill gets a small hover-only stop button.
+- Recording's compact-bar slot gets a small hover-only stop button; clicking
+  the rest of the bar still opens Capture.
 - Notes folder picker deferred to Phase 8. Webex matches webex.com. Recurrence: server-side for Google/Outlook, RRULE crate for ICS.
+- Charging/unplugging shows a 4 s transient compact-bar activity (priority 95,
+  no hover); percent-only updates refresh it without restarting its lifetime.
+- The notch and compact bar are one window/container. During a morph the window
+  is click-through and keeps the source geometry (collapse) or grows first
+  (expand); Rust gets one start plan and one final stable plan, not per-frame
+  resizes.
 
 ## Dependency justifications
 
 Backend
-- image 0.25 (default-features = false, features ["png", "jpeg"]): decode
-  album art over 400 KB and re-encode it as a 256 px JPEG before base64, so the
-  `media-state` event stays small.
+- image 0.25 (default-features = false, features ["png", "jpeg", "gif", "bmp",
+  "webp"]): decode album art over 400 KB and re-encode it as a 256 px JPEG
+  before base64, so the `media-state` event stays small; the extra decoders let
+  GIF/BMP/WebP art be sniffed by magic bytes and normalised to JPEG (unknown
+  bytes fall back to PNG).
 
 Frontend
 - @fontsource-variable/inter: bundle Inter locally (no remote font import,
@@ -34,6 +43,11 @@ Phase 1
 - windows ^0.62 (Win32_Foundation, Win32_System_Threading): single-instance enforcement via mutex (spec requirement)
 - tauri `tray-icon` feature (pulls the tray-icon crate): system tray icon and
   menu, per owner decision (Open Float / Settings / Quit)
+
+Phase 3D-4
+- windows `Win32_System_Power` feature (no new crate): `GetSystemPowerStatus`
+  is the Win32 API for AC/battery state; the poll runs on its own 2 s thread
+  and all decision logic stays pure and cross-platform testable.
 
 Phase 8
 - tauri-plugin-autostart: launch at startup

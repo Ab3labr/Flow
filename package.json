@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node --test src/live/pickActivity.test.ts",
+    "test": "node --test src/live/pickActivity.test.ts src/live/windowTransition.test.ts",
     "preview": "vite preview",
     "format": "oxfmt",
     "tauri": "tauri"
