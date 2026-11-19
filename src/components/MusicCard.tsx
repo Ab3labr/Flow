@@ -5,7 +5,7 @@ import {
   Ellipsis,
   Pause,
   Play,
-  Rewind,
+  SkipBack,
   SkipForward,
   Speaker,
 } from "lucide-react";
@@ -40,7 +40,7 @@ function TransportControls({
           onSkip(-1);
         }}
       >
-        <Rewind className="h-[17px] w-[17px] fill-white text-white" strokeWidth={1.2} />
+        <SkipBack className="h-[17px] w-[17px] fill-current text-white" strokeWidth={1.2} />
       </PressButton>
       <PressButton
         className="relative grid h-[26px] w-[26px] place-items-center rounded-full text-white hover:bg-white/[0.07]"
@@ -79,7 +79,7 @@ function TransportControls({
           onSkip(1);
         }}
       >
-        <SkipForward className="h-[17px] w-[17px] fill-white text-white" strokeWidth={1.2} />
+        <SkipForward className="h-[17px] w-[17px] fill-current text-white" strokeWidth={1.2} />
       </PressButton>
     </>
   );
@@ -318,7 +318,7 @@ export function MusicCard({
           </div>
         </div>
       ) : (
-        // Real mode: transport is wired to SMTC; lyrics/volume are not yet.
+        // Real mode: only SMTC transport is wired; lyrics/volume stay mock-only.
         <div className="flex h-[22px] items-center justify-center text-white/75">
           <div className="flex items-center gap-1">
             <TransportControls

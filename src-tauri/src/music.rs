@@ -8,6 +8,7 @@
 
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
 
+use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -23,8 +24,17 @@ pub const RESYNC_THRESHOLD_MS: i64 = 1_500;
 /// Commands wait this long for the music thread before reporting failure.
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Album art larger than this is skipped (base64 would bloat the event).
-pub const MAX_ART_BYTES: u64 = 1_500_000;
+/// Album art larger than this is decoded, downscaled and re-encoded as JPEG.
+pub const ART_DOWNSCALE_BYTES: u64 = 400_000;
+/// If decoding fails, the original bytes are only sent below this size.
+pub const ART_MAX_ORIGINAL_BYTES: u64 = 3_000_000;
+/// Longest side of the re-encoded art.
+pub const ART_MAX_DIMENSION: u32 = 256;
+pub const ART_JPEG_QUALITY: u8 = 85;
+/// Late art (Apple Music) is retried this often...
+pub const ART_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+/// ...for this long after each track change, while playing.
+pub const ART_RETRY_WINDOW: Duration = Duration::from_secs(15);
 
 /// What the frontend receives: `media_snapshot` + `media-state` payload.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -51,6 +61,7 @@ impl MediaSnapshot {
       && self.playing == other.playing
       && (self.playback_rate - other.playback_rate).abs() < 1e-6
       && self.duration_ms == other.duration_ms
+      && self.art_data_url == other.art_data_url
   }
 }
 
@@ -481,6 +492,38 @@ pub fn debug_enabled() -> bool {
     .unwrap_or(false)
 }
 
+/// Album-art cache identity: title + artist + album. A new key means new art.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtKey {
+  pub title: String,
+  pub artist: String,
+  pub album: String,
+}
+
+impl ArtKey {
+  fn label(&self) -> String {
+    format!("{} / {} / {}", self.title, self.artist, self.album)
+  }
+}
+
+/// Decodes `bytes`, shrinks anything over 256 px (longest side) and re-encodes
+/// it as JPEG quality 85. Returns `None` when the bytes are not a PNG/JPEG.
+pub fn downscale_jpeg(bytes: &[u8]) -> Option<Vec<u8>> {
+  let image = image::load_from_memory(bytes).ok()?;
+  let thumbnail = if image.width() > ART_MAX_DIMENSION || image.height() > ART_MAX_DIMENSION {
+    image.thumbnail(ART_MAX_DIMENSION, ART_MAX_DIMENSION)
+  } else {
+    image
+  };
+  let rgb = thumbnail.to_rgb8();
+  let (width, height) = rgb.dimensions();
+  let mut output = Vec::new();
+  image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, ART_JPEG_QUALITY)
+    .write_image(rgb.as_raw(), width, height, image::ExtendedColorType::Rgb8)
+    .ok()?;
+  Some(output)
+}
+
 const BASE64_ALPHABET: &[u8; 64] =
   b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -580,10 +623,11 @@ pub fn needs_resync(previous: &MediaSnapshot, current: &MediaSnapshot, now_ms: i
 #[cfg(target_os = "windows")]
 mod imp {
   use super::{
-    base64_encode, choose_candidate, corrected_position_ticks, debug_enabled, session_class,
-    source_label, ticks_to_ms, track_duration_ms, unix_now, ChoiceReason, CommandMessage,
-    LastState, MediaCommand, MediaSnapshot, MediaState, SessionHistory, SessionInfo,
-    FAST_POLL_INTERVAL, FAST_POLL_WINDOW, MAX_ART_BYTES, POLL_INTERVAL,
+    base64_encode, choose_candidate, corrected_position_ticks, debug_enabled, downscale_jpeg,
+    session_class, source_label, ticks_to_ms, track_duration_ms, unix_now, ArtKey, ChoiceReason,
+    CommandMessage, LastState, MediaCommand, MediaSnapshot, MediaState, SessionHistory,
+    SessionInfo, ART_DOWNSCALE_BYTES, ART_MAX_ORIGINAL_BYTES, ART_RETRY_INTERVAL,
+    ART_RETRY_WINDOW, FAST_POLL_INTERVAL, FAST_POLL_WINDOW, POLL_INTERVAL,
   };
   use std::collections::{HashMap, HashSet};
   use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -597,7 +641,7 @@ mod imp {
     GlobalSystemMediaTransportControlsSessionMediaProperties,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus,
   };
-  use windows::Storage::Streams::{DataReader, IRandomAccessStreamReference};
+  use windows::Storage::Streams::DataReader;
   use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
 
   type Manager = GlobalSystemMediaTransportControlsSessionManager;
@@ -605,8 +649,11 @@ mod imp {
 
   #[derive(Default)]
   struct ArtCache {
-    key: Option<(String, String)>,
+    key: Option<ArtKey>,
     url: Option<String>,
+    /// First attempt with no art for the current key (starts the retry window).
+    retry_since: Option<Instant>,
+    next_retry: Option<Instant>,
   }
 
   struct Polled {
@@ -968,6 +1015,10 @@ mod imp {
     let properties = session.TryGetMediaPropertiesAsync()?.join()?;
     let title = properties.Title()?.to_string();
     let artist = properties.Artist()?.to_string();
+    let album = properties
+      .AlbumTitle()
+      .map(|value| value.to_string())
+      .unwrap_or_default();
 
     let playback = session.GetPlaybackInfo()?;
     let status = playback.PlaybackStatus()?;
@@ -1009,7 +1060,12 @@ mod imp {
       }
     }
 
-    let art_data_url = art_for(&properties, &title, &artist, art);
+    let art_key = ArtKey {
+      title: title.clone(),
+      artist: artist.clone(),
+      album,
+    };
+    let art_data_url = art_for(session, &properties, &art_key, playing, art);
 
     Ok(MediaSnapshot {
       title,
@@ -1024,55 +1080,213 @@ mod imp {
     })
   }
 
+  /// Art cache + late-arrival retry. The first fetch uses the properties read
+  /// for this snapshot; retries re-fetch them because Apple Music may only
+  /// expose `Thumbnail()` in a later fetch. A null is never final: while
+  /// playing it is retried for 15 s after each track change.
   fn art_for(
+    session: &Session,
     properties: &GlobalSystemMediaTransportControlsSessionMediaProperties,
-    title: &str,
-    artist: &str,
+    key: &ArtKey,
+    playing: bool,
     cache: &mut ArtCache,
   ) -> Option<String> {
-    let key = (title.to_string(), artist.to_string());
-    if cache.key.as_ref() == Some(&key) {
-      return cache.url.clone();
-    }
+    let label = key.label();
 
-    // Only re-read the thumbnail when the track (title/artist) changes.
-    let url = properties
-      .Thumbnail()
-      .ok()
-      .and_then(|reference| thumbnail_data_url(&reference));
-    cache.key = Some(key);
-    cache.url = url.clone();
-    url
-  }
+    if cache.key.as_ref() != Some(key) {
+      cache.key = Some(key.clone());
+      cache.url = None;
+      cache.retry_since = None;
+      cache.next_retry = None;
 
-  fn thumbnail_data_url(reference: &IRandomAccessStreamReference) -> Option<String> {
-    let stream = reference.OpenReadAsync().ok()?.join().ok()?;
-    let size = stream.Size().ok()?;
-    if size == 0 || size > MAX_ART_BYTES {
+      if let Some(url) = art_attempt(properties, &label) {
+        cache.url = Some(url.clone());
+        return Some(url);
+      }
+      let now = Instant::now();
+      cache.retry_since = Some(now);
+      cache.next_retry = Some(now + ART_RETRY_INTERVAL);
       return None;
     }
 
+    if let Some(url) = &cache.url {
+      return Some(url.clone());
+    }
+    if !playing {
+      return None;
+    }
+
+    let now = Instant::now();
+    let since = *cache.retry_since.get_or_insert(now);
+    if now.duration_since(since) >= ART_RETRY_WINDOW {
+      return None;
+    }
+    if cache.next_retry.is_some_and(|at| now < at) {
+      return None;
+    }
+    cache.next_retry = Some(now + ART_RETRY_INTERVAL);
+
+    let fetched = match session
+      .TryGetMediaPropertiesAsync()
+      .and_then(|operation| operation.join())
+    {
+      Ok(properties) => properties,
+      Err(err) => {
+        if debug_enabled() {
+          log::info!("media: art {label}: refetch failed ({err}) result=null");
+        }
+        return None;
+      }
+    };
+
+    match art_attempt(&fetched, &label) {
+      Some(url) => {
+        cache.url = Some(url.clone());
+        cache.next_retry = None;
+        Some(url)
+      }
+      None => None,
+    }
+  }
+
+  /// One art read. Under `FLOAT_DEBUG` it logs whether `Thumbnail()` was
+  /// present, whether the stream opened, its byte length and content type,
+  /// whether downscaling ran, and the final result.
+  fn art_attempt(
+    properties: &GlobalSystemMediaTransportControlsSessionMediaProperties,
+    label: &str,
+  ) -> Option<String> {
+    let debug = debug_enabled();
+
+    let reference = match properties.Thumbnail() {
+      Ok(reference) => {
+        if debug {
+          log::info!("media: art {label}: thumbnail=true");
+        }
+        reference
+      }
+      Err(_) => {
+        if debug {
+          log::info!("media: art {label}: thumbnail=false result=null");
+        }
+        return None;
+      }
+    };
+
+    let stream = match reference
+      .OpenReadAsync()
+      .and_then(|operation| operation.join())
+    {
+      Ok(stream) => {
+        if debug {
+          log::info!("media: art {label}: opened=true");
+        }
+        stream
+      }
+      Err(err) => {
+        if debug {
+          log::info!("media: art {label}: opened=false ({err}) result=null");
+        }
+        return None;
+      }
+    };
+
+    let size = stream.Size().unwrap_or(0);
     let content_type = stream
       .ContentType()
       .map(|value| value.to_string())
       .unwrap_or_default();
-    let input = stream.GetInputStreamAt(0).ok()?;
-    let reader = DataReader::CreateDataReader(&input).ok()?;
-    let loaded = reader.LoadAsync(size as u32).ok()?.join().ok()?;
+    if debug {
+      log::info!("media: art {label}: bytes={size} contentType={content_type}");
+    }
+    if size == 0 {
+      if debug {
+        log::info!("media: art {label}: result=null (empty stream)");
+      }
+      return None;
+    }
+
+    let input = match stream.GetInputStreamAt(0) {
+      Ok(input) => input,
+      Err(err) => {
+        if debug {
+          log::info!("media: art {label}: input failed ({err}) result=null");
+        }
+        return None;
+      }
+    };
+    let reader = match DataReader::CreateDataReader(&input) {
+      Ok(reader) => reader,
+      Err(err) => {
+        if debug {
+          log::info!("media: art {label}: reader failed ({err}) result=null");
+        }
+        return None;
+      }
+    };
+    let loaded = match reader
+      .LoadAsync(size as u32)
+      .and_then(|operation| operation.join())
+    {
+      Ok(loaded) => loaded,
+      Err(err) => {
+        if debug {
+          log::info!("media: art {label}: read failed ({err}) result=null");
+        }
+        return None;
+      }
+    };
     if loaded == 0 {
+      if debug {
+        log::info!("media: art {label}: result=null (empty read)");
+      }
       return None;
     }
 
     let mut bytes = vec![0u8; loaded as usize];
-    reader.ReadBytes(&mut bytes).ok()?;
+    if let Err(err) = reader.ReadBytes(&mut bytes) {
+      if debug {
+        log::info!("media: art {label}: ReadBytes failed ({err}) result=null");
+      }
+      return None;
+    }
 
-    let mime = content_type
+    let length = loaded as u64;
+    let source_mime = content_type
       .split(';')
       .next()
       .map(str::trim)
       .filter(|value| !value.is_empty())
       .unwrap_or("image/jpeg");
-    Some(format!("data:{mime};base64,{}", base64_encode(&bytes)))
+
+    let (output, mime, downscaled) = if length > ART_DOWNSCALE_BYTES {
+      match downscale_jpeg(&bytes) {
+        Some(jpeg) => (jpeg, "image/jpeg", true),
+        None if length < ART_MAX_ORIGINAL_BYTES => {
+          if debug {
+            log::info!("media: art {label}: downscale=failed bytes={length} using original");
+          }
+          (bytes, source_mime, false)
+        }
+        None => {
+          if debug {
+            log::info!("media: art {label}: downscale=failed bytes={length} too large result=null");
+          }
+          return None;
+        }
+      }
+    } else {
+      (bytes, source_mime, false)
+    };
+
+    let url = format!("data:{mime};base64,{}", base64_encode(&output));
+    if debug {
+      log::info!(
+        "media: art {label}: downscale={downscaled} result=url ({} bytes)",
+        output.len()
+      );
+    }
+    Some(url)
   }
 }
 
@@ -1209,6 +1423,36 @@ mod tests {
   }
 
   #[test]
+  fn oversized_art_is_fitted_into_256px_jpeg() {
+    let source =
+      image::RgbImage::from_fn(512, 256, |x, y| image::Rgb([x as u8, y as u8, 128]));
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgb8(source)
+      .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+      .expect("png encode");
+    let jpeg = downscale_jpeg(&png).expect("jpeg encode");
+    let decoded = image::load_from_memory(&jpeg).expect("jpeg decode");
+    assert_eq!((decoded.width(), decoded.height()), (256, 128));
+  }
+
+  #[test]
+  fn small_art_is_not_upscaled() {
+    let source = image::RgbImage::from_fn(64, 32, |x, y| image::Rgb([x as u8, y as u8, 0]));
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgb8(source)
+      .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+      .expect("png encode");
+    let jpeg = downscale_jpeg(&png).expect("jpeg encode");
+    let decoded = image::load_from_memory(&jpeg).expect("jpeg decode");
+    assert_eq!((decoded.width(), decoded.height()), (64, 32));
+  }
+
+  #[test]
+  fn undecodable_art_has_no_downscale() {
+    assert!(downscale_jpeg(b"not an image").is_none());
+  }
+
+  #[test]
   fn base64_matches_rfc4648_vectors() {
     assert_eq!(base64_encode(b""), "");
     assert_eq!(base64_encode(b"f"), "Zg==");
@@ -1286,7 +1530,7 @@ mod tests {
 
     let mut painted = base.clone();
     painted.art_data_url = Some("data:image/png;base64,AA==".into());
-    assert!(base.same_state(&painted));
+    assert!(!base.same_state(&painted));
 
     let mut slowed = base.clone();
     slowed.playback_rate = 0.5;

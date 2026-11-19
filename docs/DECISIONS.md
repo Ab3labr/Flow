@@ -17,6 +17,11 @@ UI/UX
 
 ## Dependency justifications
 
+Backend
+- image 0.25 (default-features = false, features ["png", "jpeg"]): decode
+  album art over 400 KB and re-encode it as a 256 px JPEG before base64, so the
+  `media-state` event stays small.
+
 Frontend
 - @fontsource-variable/inter: bundle Inter locally (no remote font import,
   CSP-safe, works offline)

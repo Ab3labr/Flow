@@ -45,7 +45,8 @@ not started / in progress / done / blocked
 
 ### Phase 3 — Music (SMTC)
 - [x] Now playing snapshot + events (session/props/playback/timeline)
-- [x] Art → data URL (cached by title+artist, ≤1.5 MB); 8x8 canvas glow;
+- [x] Art → data URL keyed by title+artist+album, retried every 1 s for 15 s
+      while playing; >400 KB downscaled to ≤256 px JPEG; 8x8 canvas glow;
       duration null handling
 - [x] Position corrected from `LastUpdatedTime` + `PlaybackRate`; seek resync
       (>1.5 s drift)
@@ -56,7 +57,7 @@ not started / in progress / done / blocked
 - [x] Position interpolation in UI from `positionMs`/`capturedAtMs`/rate;
       whole-second labels floored so elapsed + remaining = duration
 - [x] Source label map
-- [ ] System volume (IAudioEndpointVolume)
+- [ ] System volume (IAudioEndpointVolume) — dropped from the UI
 - [x] Idle home state when no session
 
 ### Phase 4 — Timer (Rust-authoritative)
@@ -140,6 +141,22 @@ Tauri 2 shell scaffolded:
 - Settings file creation/load/save implemented (atomic temp+rename), stores NotchSettings, notesFolder, calendarAccounts, timerCustomTimes
 - Commands: settings_get, settings_set
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
+
+## Last session (Phase 3C part 2 — late album art, skip icons, transport-only real card)
+Art is now cached by title + artist + album. A missing cover is never final:
+while the chosen session is Playing, the poll thread retries once per second for
+15 s after each track change, re-calling `TryGetMediaPropertiesAsync` because
+Apple Music may only expose `Thumbnail()` in a later fetch; retries stop as soon
+as art arrives. Images over 400 KB are decoded with `image` (png/jpeg only),
+fitted into 256 px and re-encoded as JPEG quality 85 before base64; if decoding
+fails the original bytes are used when under 3 MB, otherwise art stays null.
+`FLOAT_DEBUG=1` logs every attempt: `Thumbnail()` present, stream opened, byte
+length, content type, whether downscaling ran, and the final result.
+
+The music card uses lucide `SkipBack`/`SkipForward` (17 px, `fill-current`,
+strokeWidth 1.2) for previous/next; `Rewind` is gone. Real mode keeps only the
+centered previous/play-pause/next row — lyrics, volume, the `...` menu and
+Output device remain mock-only, and no Rust volume code was added.
 
 ## Last session (Phase 3C part 1 — session priority, clock, single-target controls)
 Session choice is now a pure `choose_candidate()` over `SessionInfo` +
@@ -232,7 +249,7 @@ transport/volume controls in real mode.
 
 Half-done / follow-ups (superseded by Phase 3B):
 - Transport (play/pause/skip/seek) and seek resync landed in Phase 3B; system
-  volume is still pending.
+  volume was dropped from the UI in Phase 3C.2.
 - Base64 is hand-written to avoid a one-use dependency.
 
 ## Last session (Rust-owned panel open state + three close paths)
@@ -456,3 +473,4 @@ Half-done / follow-ups:
 - Music 3A: `music.rs` SMTC poll thread (MTA, 500 ms), cached `media_snapshot`, state-only `media-state`, base64 art + AUMID source labels; real mediaService + interpolated progress + art glow; no fake songs in Tauri mode.
 - Music 3B: position corrected from `LastUpdatedTime` + `PlaybackRate` (seek resync >1.5 s), stable sticky session choice, `media_toggle/next/prev/seek` over an mpsc channel with 2 s timeout + 150 ms fast polling; frontend transport/scrubber wired.
 - Music 3C.1: pure class/priority chooser (music > other > browser, earliest playing, current-session tie-break, paused fallback) with history keyed by AUMID (+index), floored clock labels, 5 s `FLOAT_DEBUG` diagnostics, and commands sent only to the stored displayed session object.
+- Music 3C.2: album art keyed by title+artist+album with 1 s/15 s late-arrival retries and `image` downscaling (≤256 px JPEG q85 over 400 KB), `SkipBack`/`SkipForward` icons, real card limited to centered transport (volume/lyrics/menu dropped from the UI).
