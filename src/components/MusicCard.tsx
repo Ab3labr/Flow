@@ -15,8 +15,9 @@ import type { Track } from "../services";
 import { Equalizer } from "./CollapsedPill";
 import { PressButton } from "./TopBar";
 
+// Whole seconds, always floored: elapsed + remaining equals the duration.
 function formatTime(seconds: number) {
-  const value = Math.max(0, Math.round(seconds));
+  const value = Math.floor(Math.max(0, seconds));
   return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}`;
 }
 
@@ -253,7 +254,7 @@ export function MusicCard({
             />
           </div>
           <span className="w-8 text-right text-[11px] tabular-nums text-white/50">
-            -{formatTime(totalSeconds - progress)}
+            -{formatTime(Math.floor(totalSeconds) - Math.floor(progress))}
           </span>
         </div>
       ) : (

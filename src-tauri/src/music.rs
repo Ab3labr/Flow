@@ -293,6 +293,194 @@ fn readable_app_id(app_id: &str) -> String {
   }
 }
 
+/// Session priority: lower classes win while several apps are playing.
+pub const SESSION_CLASS_MUSIC: u8 = 0;
+pub const SESSION_CLASS_OTHER: u8 = 1;
+pub const SESSION_CLASS_BROWSER: u8 = 2;
+
+/// AUMID substrings (case-insensitive) that count as dedicated music apps.
+pub const MUSIC_APPS: [&str; 8] = [
+  "spotify",
+  "applemusic",
+  "itunes",
+  "youtubemusic",
+  "youtube music",
+  "amazonmusic",
+  "tidal",
+  "deezer",
+];
+
+/// AUMID substrings (case-insensitive) that count as browsers. Browsers go
+/// last because their SMTC entry is usually a tab, not a dedicated player.
+pub const BROWSER_APPS: [&str; 7] = [
+  "chrome",
+  "msedge",
+  "edge",
+  "brave",
+  "firefox",
+  "opera",
+  "vivaldi",
+];
+
+/// 0 = music app, 1 = other, 2 = browser.
+pub fn session_class(app_id: &str) -> u8 {
+  let lower = app_id.to_ascii_lowercase();
+  if MUSIC_APPS.iter().any(|needle| lower.contains(needle)) {
+    SESSION_CLASS_MUSIC
+  } else if BROWSER_APPS.iter().any(|needle| lower.contains(needle)) {
+    SESSION_CLASS_BROWSER
+  } else {
+    SESSION_CLASS_OTHER
+  }
+}
+
+/// One SMTC session as seen by the pure chooser. `key` is the app ID, or
+/// `app-id#index` when two sessions share an AUMID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionInfo {
+  pub key: String,
+  pub app_id: String,
+  pub playing: bool,
+  pub system_current: bool,
+}
+
+/// What the poll thread remembers about a session between ticks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionTrack {
+  /// When it was first seen playing in the current playing stretch.
+  pub playing_since: Option<i64>,
+  /// Last time it was seen playing (kept while paused for the fallback).
+  pub last_playing_at: Option<i64>,
+}
+
+/// Per-session bookkeeping, pruned as sessions disappear.
+#[derive(Debug, Default, Clone)]
+pub struct SessionHistory {
+  entries: std::collections::BTreeMap<String, SessionTrack>,
+}
+
+impl SessionHistory {
+  /// Updates every session that currently exists and drops vanished ones.
+  pub fn observe(&mut self, sessions: &[SessionInfo], now_ms: i64) {
+    let mut next = std::collections::BTreeMap::new();
+    for session in sessions {
+      let mut track = self.entries.get(&session.key).copied().unwrap_or_default();
+      if session.playing {
+        track.playing_since.get_or_insert(now_ms);
+        track.last_playing_at = Some(now_ms);
+      } else {
+        track.playing_since = None;
+      }
+      next.insert(session.key.clone(), track);
+    }
+    self.entries = next;
+  }
+
+  pub fn track(&self, key: &str) -> SessionTrack {
+    self.entries.get(key).copied().unwrap_or_default()
+  }
+}
+
+/// Why the chooser picked a session (for the switch log).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChoiceReason {
+  PlayingLowestClass,
+  PlayingEarliest,
+  PlayingSystemCurrent,
+  PausedMostRecent,
+  SystemCurrent,
+}
+
+impl ChoiceReason {
+  pub fn as_str(self) -> &'static str {
+    match self {
+      ChoiceReason::PlayingLowestClass => "playing:lowest-class",
+      ChoiceReason::PlayingEarliest => "playing:earliest",
+      ChoiceReason::PlayingSystemCurrent => "playing:system-current",
+      ChoiceReason::PausedMostRecent => "paused:most-recent",
+      ChoiceReason::SystemCurrent => "paused:system-current",
+    }
+  }
+}
+
+/// Picks the session to display.
+///
+/// Playing sessions win, ordered by class (music, other, browser) and then by
+/// how long they have been playing; ties prefer the system's current session,
+/// then the `GetSessions()` order. With nothing playing, the most recently
+/// playing session is shown, then the system's current session, then nothing.
+pub fn choose_candidate<'a>(
+  sessions: &'a [SessionInfo],
+  history: &SessionHistory,
+) -> Option<(&'a SessionInfo, ChoiceReason)> {
+  let playing: Vec<&SessionInfo> = sessions.iter().filter(|session| session.playing).collect();
+
+  if !playing.is_empty() {
+    let best_class = playing
+      .iter()
+      .map(|session| session_class(&session.app_id))
+      .min()
+      .unwrap_or(SESSION_CLASS_OTHER);
+    let mut candidates: Vec<&SessionInfo> = playing
+      .into_iter()
+      .filter(|session| session_class(&session.app_id) == best_class)
+      .collect();
+
+    if candidates.len() == 1 {
+      return Some((candidates[0], ChoiceReason::PlayingLowestClass));
+    }
+
+    let earliest = candidates
+      .iter()
+      .filter_map(|session| history.track(&session.key).playing_since)
+      .min();
+    if let Some(earliest) = earliest {
+      candidates.retain(|session| history.track(&session.key).playing_since == Some(earliest));
+      if candidates.len() == 1 {
+        return Some((candidates[0], ChoiceReason::PlayingEarliest));
+      }
+    }
+
+    if let Some(current) = candidates.iter().find(|session| session.system_current) {
+      return Some((current, ChoiceReason::PlayingSystemCurrent));
+    }
+    return Some((candidates[0], ChoiceReason::PlayingEarliest));
+  }
+
+  let mut paused: Vec<&SessionInfo> = sessions
+    .iter()
+    .filter(|session| history.track(&session.key).last_playing_at.is_some())
+    .collect();
+  if !paused.is_empty() {
+    let latest = paused
+      .iter()
+      .filter_map(|session| history.track(&session.key).last_playing_at)
+      .max();
+    if let Some(latest) = latest {
+      paused.retain(|session| history.track(&session.key).last_playing_at == Some(latest));
+      if let Some(current) = paused.iter().find(|session| session.system_current) {
+        return Some((current, ChoiceReason::PausedMostRecent));
+      }
+      return Some((paused[0], ChoiceReason::PausedMostRecent));
+    }
+  }
+
+  sessions
+    .iter()
+    .find(|session| session.system_current)
+    .map(|session| (session, ChoiceReason::SystemCurrent))
+}
+
+/// True when `FLOAT_DEBUG=1` (or `true`) asks for the verbose media logs.
+pub fn debug_enabled() -> bool {
+  std::env::var("FLOAT_DEBUG")
+    .map(|value| {
+      let value = value.trim();
+      value == "1" || value.eq_ignore_ascii_case("true")
+    })
+    .unwrap_or(false)
+}
+
 const BASE64_ALPHABET: &[u8; 64] =
   b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -392,13 +580,15 @@ pub fn needs_resync(previous: &MediaSnapshot, current: &MediaSnapshot, now_ms: i
 #[cfg(target_os = "windows")]
 mod imp {
   use super::{
-    base64_encode, corrected_position_ticks, source_label, ticks_to_ms, track_duration_ms,
-    unix_now, CommandMessage, LastState, MediaCommand, MediaSnapshot, MediaState, FAST_POLL_INTERVAL,
-    FAST_POLL_WINDOW, MAX_ART_BYTES, POLL_INTERVAL,
+    base64_encode, choose_candidate, corrected_position_ticks, debug_enabled, session_class,
+    source_label, ticks_to_ms, track_duration_ms, unix_now, ChoiceReason, CommandMessage,
+    LastState, MediaCommand, MediaSnapshot, MediaState, SessionHistory, SessionInfo,
+    FAST_POLL_INTERVAL, FAST_POLL_WINDOW, MAX_ART_BYTES, POLL_INTERVAL,
   };
+  use std::collections::{HashMap, HashSet};
   use std::sync::mpsc::{Receiver, RecvTimeoutError};
   use std::sync::Arc;
-  use std::time::Instant;
+  use std::time::{Duration, Instant};
   use tauri::Emitter;
   use windows::core::Result as WinResult;
   use windows::Media::Control::{
@@ -420,8 +610,23 @@ mod imp {
   }
 
   struct Polled {
+    key: Option<String>,
     app_id: Option<String>,
+    class: u8,
+    reason: Option<ChoiceReason>,
     snapshot: Option<MediaSnapshot>,
+  }
+
+  impl Polled {
+    fn none() -> Self {
+      Self {
+        key: None,
+        app_id: None,
+        class: 0,
+        reason: None,
+        snapshot: None,
+      }
+    }
   }
 
   pub fn start(
@@ -458,7 +663,11 @@ mod imp {
     let mut manager: Option<Manager> = None;
     let mut art = ArtCache::default();
     let mut last = LastState::Uninitialized;
-    let mut last_app_id: Option<String> = None;
+    let mut history = SessionHistory::default();
+    let mut shown: Option<Session> = None;
+    let mut shown_key: Option<String> = None;
+    let mut logged_ids: HashSet<String> = HashSet::new();
+    let mut last_debug: Option<Instant> = None;
     let mut manager_error_logged = false;
     let mut session_error_logged = false;
     let mut fast_until: Option<Instant> = None;
@@ -467,19 +676,26 @@ mod imp {
       let polled = poll_once(
         &mut manager,
         &mut art,
-        last_app_id.as_deref(),
+        &mut history,
+        &mut shown,
+        &mut logged_ids,
+        &mut last_debug,
         &mut manager_error_logged,
         &mut session_error_logged,
       );
 
       let now_ms = unix_now().0;
-      let session_changed = polled.app_id != last_app_id;
+      let session_changed = polled.key != shown_key;
       if session_changed {
-        match &polled.app_id {
-          Some(app_id) => log::info!("media: session switch -> {app_id}"),
-          None => log::info!("media: session switch -> none"),
+        match (&polled.key, &polled.app_id, polled.reason) {
+          (Some(key), Some(app_id), Some(reason)) => log::info!(
+            "media: switch -> {key} (app={app_id}, class={}, reason={})",
+            polled.class,
+            reason.as_str()
+          ),
+          _ => log::info!("media: switch -> none"),
         }
-        last_app_id = polled.app_id.clone();
+        shown_key = polled.key.clone();
       }
 
       if last.changed(&polled.snapshot, now_ms, session_changed) {
@@ -526,7 +742,7 @@ mod imp {
         }
         match commands.recv_timeout(deadline - now) {
           Ok(message) => {
-            let ok = handle_command(manager.as_ref(), last_app_id.as_deref(), message.command);
+            let ok = handle_command(shown.as_ref(), message.command);
             let _ = message.reply.send(ok);
             fast_until = Some(Instant::now() + FAST_POLL_WINDOW);
             break;
@@ -541,7 +757,10 @@ mod imp {
   fn poll_once(
     manager: &mut Option<Manager>,
     art: &mut ArtCache,
-    current_app_id: Option<&str>,
+    history: &mut SessionHistory,
+    shown: &mut Option<Session>,
+    logged_ids: &mut HashSet<String>,
+    last_debug: &mut Option<Instant>,
     manager_error_logged: &mut bool,
     session_error_logged: &mut bool,
   ) -> Polled {
@@ -556,49 +775,69 @@ mod imp {
             log::warn!("media: session manager unavailable: {err}");
             *manager_error_logged = true;
           }
-          return Polled {
-            app_id: None,
-            snapshot: None,
-          };
+          *shown = None;
+          return Polled::none();
         }
       }
     }
 
     let Some(manager) = manager.as_ref() else {
-      return Polled {
-        app_id: None,
-        snapshot: None,
-      };
+      *shown = None;
+      return Polled::none();
     };
 
-    let session = match choose_session(manager, current_app_id) {
-      Ok(Some(session)) => session,
-      Ok(None) => {
-        *session_error_logged = false;
-        return Polled {
-          app_id: None,
-          snapshot: None,
-        };
-      }
+    let (sessions, infos) = match enumerate_sessions(manager) {
+      Ok(value) => value,
       Err(err) => {
         if !*session_error_logged {
-          log::warn!("media: could not choose a session: {err}");
+          log::warn!("media: could not enumerate sessions: {err}");
           *session_error_logged = true;
         }
-        return Polled {
-          app_id: None,
-          snapshot: None,
-        };
+        *shown = None;
+        return Polled::none();
       }
     };
 
-    let app_id = session_app_id(&session);
+    history.observe(&infos, unix_now().0);
 
-    match read_snapshot(&session, art) {
+    if debug_enabled() {
+      for info in &infos {
+        if logged_ids.insert(info.key.clone()) {
+          log::info!(
+            "media: session seen -> {} (app={}, class={})",
+            info.key,
+            info.app_id,
+            session_class(&info.app_id)
+          );
+        }
+      }
+    }
+
+    let Some((choice, reason)) = choose_candidate(&infos, history) else {
+      *shown = None;
+      *session_error_logged = false;
+      return Polled::none();
+    };
+
+    let Some(index) = infos.iter().position(|info| info.key == choice.key) else {
+      *shown = None;
+      return Polled::none();
+    };
+    let session = sessions[index].clone();
+    *shown = Some(session.clone());
+
+    let app_id = choice.app_id.clone();
+    let class = session_class(&app_id);
+    let key = choice.key.clone();
+
+    match read_snapshot(&session, art, last_debug) {
       Ok(snapshot) => {
         *session_error_logged = false;
         Polled {
-          app_id,
+          key: Some(key),
+          app_id: Some(app_id),
+          class,
+          reason: Some(reason),
           snapshot: Some(snapshot),
         }
       }
@@ -608,11 +847,60 @@ mod imp {
           *session_error_logged = true;
         }
         Polled {
-          app_id,
+          key: Some(key),
+          app_id: Some(app_id),
+          class,
+          reason: Some(reason),
           snapshot: None,
         }
       }
     }
+  }
+
+  /// Reads every session once, giving duplicates of the same AUMID a distinct
+  /// key. `SessionInfo` is what the pure chooser sees; the objects are kept in
+  /// the same order so the chosen one can be stored for transport commands.
+  fn enumerate_sessions(manager: &Manager) -> WinResult<(Vec<Session>, Vec<SessionInfo>)> {
+    let sessions = manager.GetSessions()?;
+    let count = sessions.Size()?;
+    let mut objects = Vec::with_capacity(count as usize);
+    let mut app_ids = Vec::with_capacity(count as usize);
+    let mut counts: HashMap<String, usize> = HashMap::new();
+
+    for index in 0..count {
+      let session = sessions.GetAt(index)?;
+      let app_id = session_app_id(&session).unwrap_or_default();
+      *counts.entry(app_id.clone()).or_insert(0) += 1;
+      app_ids.push(app_id);
+      objects.push(session);
+    }
+
+    let current_app_id = manager
+      .GetCurrentSession()
+      .ok()
+      .and_then(|session| session_app_id(&session));
+    let mut current_marked = false;
+
+    let mut infos = Vec::with_capacity(objects.len());
+    for (index, (session, app_id)) in objects.iter().zip(app_ids).enumerate() {
+      let key = if counts.get(&app_id).copied().unwrap_or(0) > 1 {
+        format!("{app_id}#{index}")
+      } else {
+        app_id.clone()
+      };
+      let system_current = !current_marked && current_app_id.as_deref() == Some(app_id.as_str());
+      if system_current {
+        current_marked = true;
+      }
+      infos.push(SessionInfo {
+        key,
+        app_id,
+        playing: is_playing(session),
+        system_current,
+      });
+    }
+
+    Ok((objects, infos))
   }
 
   fn session_app_id(session: &Session) -> Option<String> {
@@ -630,85 +918,15 @@ mod imp {
       .unwrap_or(false)
   }
 
-  /// Stable choice: stay on the shown session while it plays, then prefer the
-  /// system's current session, then any playing session, then a paused one.
-  fn choose_session(
-    manager: &Manager,
-    current_app_id: Option<&str>,
-  ) -> WinResult<Option<Session>> {
-    let sessions = manager.GetSessions()?;
-    let count = sessions.Size()?;
-
-    // (a) Keep the session we are showing while it is still playing.
-    if let Some(app_id) = current_app_id {
-      for index in 0..count {
-        let session = sessions.GetAt(index)?;
-        if session_app_id(&session).is_some_and(|id| id.eq_ignore_ascii_case(app_id))
-          && is_playing(&session)
-        {
-          return Ok(Some(session));
-        }
-      }
-    }
-
-    let system_current = manager.GetCurrentSession().ok();
-
-    // (b) The system's current session if it is playing.
-    if let Some(session) = &system_current {
-      if is_playing(session) {
-        return Ok(Some(session.clone()));
-      }
-    }
-
-    // (c) The first playing session on the system.
-    for index in 0..count {
-      let session = sessions.GetAt(index)?;
-      if is_playing(&session) {
-        return Ok(Some(session));
-      }
-    }
-
-    // (d) A paused session, if there is one. No session is a valid idle state.
-    Ok(system_current)
-  }
-
-  fn find_session(manager: &Manager, app_id: &str) -> WinResult<Option<Session>> {
-    let sessions = manager.GetSessions()?;
-    let count = sessions.Size()?;
-    for index in 0..count {
-      let session = sessions.GetAt(index)?;
-      if session_app_id(&session).is_some_and(|id| id.eq_ignore_ascii_case(app_id)) {
-        return Ok(Some(session));
-      }
-    }
-    Ok(None)
-  }
-
-  fn handle_command(
-    manager: Option<&Manager>,
-    app_id: Option<&str>,
-    command: MediaCommand,
-  ) -> bool {
-    let Some(manager) = manager else {
-      log::warn!("media: command {command:?} with no session manager");
+  /// Runs a transport command on exactly the displayed session object. It never
+  /// re-finds a session by app ID and never falls back to `GetCurrentSession`,
+  /// so other players (and browser media keys) are not touched.
+  fn handle_command(session: Option<&Session>, command: MediaCommand) -> bool {
+    let Some(session) = session else {
+      log::warn!("media: command {command:?} with no displayed session");
       return false;
     };
-    let Some(app_id) = app_id else {
-      log::warn!("media: command {command:?} with no session");
-      return false;
-    };
-
-    let session = match find_session(manager, app_id) {
-      Ok(Some(session)) => session,
-      Ok(None) => {
-        log::warn!("media: command {command:?} target {app_id} not found");
-        return false;
-      }
-      Err(err) => {
-        log::warn!("media: command {command:?} session lookup failed: {err}");
-        return false;
-      }
-    };
+    let app_id = session_app_id(session).unwrap_or_else(|| "unknown".to_string());
 
     let result = match command {
       MediaCommand::Toggle => session
@@ -726,19 +944,26 @@ mod imp {
     };
 
     match result {
-      Ok(true) => true,
+      Ok(true) => {
+        log::info!("media: command {command:?} -> {app_id}: true");
+        true
+      }
       Ok(false) => {
-        log::warn!("media: command {command:?} returned false");
+        log::warn!("media: command {command:?} -> {app_id}: false");
         false
       }
       Err(err) => {
-        log::warn!("media: command {command:?} failed: {err}");
+        log::warn!("media: command {command:?} -> {app_id} failed: {err}");
         false
       }
     }
   }
 
-  fn read_snapshot(session: &Session, art: &mut ArtCache) -> WinResult<MediaSnapshot> {
+  fn read_snapshot(
+    session: &Session,
+    art: &mut ArtCache,
+    last_debug: &mut Option<Instant>,
+  ) -> WinResult<MediaSnapshot> {
     let app_id = session.SourceAppUserModelId()?.to_string();
     let properties = session.TryGetMediaPropertiesAsync()?.join()?;
     let title = properties.Title()?.to_string();
@@ -773,6 +998,16 @@ mod imp {
       playing,
       duration_ticks,
     );
+
+    if debug_enabled() {
+      let due = last_debug.map_or(true, |at| at.elapsed() >= Duration::from_secs(5));
+      if due {
+        log::info!(
+          "media: debug {app_id}: raw={snapshot_position} lastUpdated={last_updated} rate={playback_rate} position={position} capturedAt={captured_at_ms}ms"
+        );
+        *last_debug = Some(Instant::now());
+      }
+    }
 
     let art_data_url = art_for(&properties, &title, &artist, art);
 
@@ -844,6 +1079,134 @@ mod imp {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  fn session(key: &str, app_id: &str, playing: bool, current: bool) -> SessionInfo {
+    SessionInfo {
+      key: key.to_string(),
+      app_id: app_id.to_string(),
+      playing,
+      system_current: current,
+    }
+  }
+
+  #[test]
+  fn session_classes_match_case_insensitively() {
+    assert_eq!(session_class("SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify"), SESSION_CLASS_MUSIC);
+    assert_eq!(session_class("AppleMusic.exe"), SESSION_CLASS_MUSIC);
+    assert_eq!(session_class("YouTube Music"), SESSION_CLASS_MUSIC);
+    assert_eq!(session_class("Google.Chrome"), SESSION_CLASS_BROWSER);
+    assert_eq!(session_class("MSEdge.exe"), SESSION_CLASS_BROWSER);
+    assert_eq!(session_class("Vivaldi.exe"), SESSION_CLASS_BROWSER);
+    assert_eq!(session_class("C:\\Program Files\\VLC\\vlc.exe"), SESSION_CLASS_OTHER);
+  }
+
+  #[test]
+  fn playing_music_app_beats_an_older_browser_session() {
+    let browser = session("chrome", "Chrome", true, false);
+    let music = session("spotify", "Spotify.exe", true, false);
+    let mut history = SessionHistory::default();
+    history.observe(std::slice::from_ref(&browser), 1_000);
+    history.observe(&[browser.clone(), music.clone()], 2_000);
+
+    let candidates = [browser, music];
+    let (chosen, reason) = choose_candidate(&candidates, &history).unwrap();
+    assert_eq!(chosen.key, "spotify");
+    assert_eq!(reason, ChoiceReason::PlayingLowestClass);
+  }
+
+  #[test]
+  fn two_browser_sessions_pick_the_one_playing_longest() {
+    let older = session("chrome", "chrome.exe", true, false);
+    let newer = session("brave", "brave.exe", true, false);
+    let mut history = SessionHistory::default();
+    history.observe(std::slice::from_ref(&older), 1_000);
+    history.observe(&[older.clone(), newer.clone()], 2_000);
+
+    let candidates = [older, newer];
+    let (chosen, reason) = choose_candidate(&candidates, &history).unwrap();
+    assert_eq!(chosen.key, "chrome");
+    assert_eq!(reason, ChoiceReason::PlayingEarliest);
+  }
+
+  #[test]
+  fn paused_fallback_picks_the_most_recently_playing_session() {
+    let spotify = session("spotify", "Spotify.exe", true, false);
+    let chrome = session("chrome", "chrome.exe", true, false);
+    let mut history = SessionHistory::default();
+    history.observe(&[spotify.clone(), chrome.clone()], 1_000);
+    history.observe(
+      &[
+        session("spotify", "Spotify.exe", false, false),
+        chrome.clone(),
+      ],
+      2_000,
+    );
+
+    let paused_spotify = session("spotify", "Spotify.exe", false, false);
+    let paused_chrome = session("chrome", "chrome.exe", false, false);
+    let candidates = [paused_spotify, paused_chrome];
+    let (chosen, reason) = choose_candidate(&candidates, &history).unwrap();
+    assert_eq!(chosen.key, "chrome");
+    assert_eq!(reason, ChoiceReason::PausedMostRecent);
+  }
+
+  #[test]
+  fn a_playing_tie_prefers_the_system_current_session() {
+    let chrome = session("chrome", "chrome.exe", true, true);
+    let brave = session("brave", "brave.exe", true, false);
+    let mut history = SessionHistory::default();
+    history.observe(&[chrome.clone(), brave.clone()], 1_000);
+
+    let candidates = [chrome, brave];
+    let (chosen, reason) = choose_candidate(&candidates, &history).unwrap();
+    assert_eq!(chosen.key, "chrome");
+    assert_eq!(reason, ChoiceReason::PlayingSystemCurrent);
+  }
+
+  #[test]
+  fn a_playing_tie_without_a_system_current_uses_session_order() {
+    let first = session("brave", "brave.exe", true, false);
+    let second = session("chrome", "chrome.exe", true, false);
+    let mut history = SessionHistory::default();
+    history.observe(&[first.clone(), second.clone()], 1_000);
+
+    let candidates = [first, second];
+    let (chosen, reason) = choose_candidate(&candidates, &history).unwrap();
+    assert_eq!(chosen.key, "brave");
+    assert_eq!(reason, ChoiceReason::PlayingEarliest);
+  }
+
+  #[test]
+  fn a_disappearing_session_loses_its_bookkeeping_and_choice() {
+    let spotify = session("spotify", "Spotify.exe", true, false);
+    let chrome = session("chrome", "chrome.exe", true, false);
+    let mut history = SessionHistory::default();
+    history.observe(&[spotify, chrome.clone()], 1_000);
+
+    let paused_chrome = session("chrome", "chrome.exe", false, false);
+    history.observe(std::slice::from_ref(&paused_chrome), 2_000);
+
+    assert_eq!(history.track("spotify"), SessionTrack::default());
+    let candidates = [paused_chrome];
+    let (chosen, reason) = choose_candidate(&candidates, &history).unwrap();
+    assert_eq!(chosen.key, "chrome");
+    assert_eq!(reason, ChoiceReason::PausedMostRecent);
+  }
+
+  #[test]
+  fn with_no_history_the_system_current_session_is_shown() {
+    let chrome = session("chrome", "chrome.exe", false, true);
+    let history = SessionHistory::default();
+    let candidates = [chrome];
+    let (chosen, reason) = choose_candidate(&candidates, &history).unwrap();
+    assert_eq!(chosen.key, "chrome");
+    assert_eq!(reason, ChoiceReason::SystemCurrent);
+  }
+
+  #[test]
+  fn no_sessions_means_no_choice() {
+    assert!(choose_candidate(&[], &SessionHistory::default()).is_none());
+  }
 
   #[test]
   fn base64_matches_rfc4648_vectors() {

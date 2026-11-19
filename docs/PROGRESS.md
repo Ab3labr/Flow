@@ -49,10 +49,12 @@ not started / in progress / done / blocked
       duration null handling
 - [x] Position corrected from `LastUpdatedTime` + `PlaybackRate`; seek resync
       (>1.5 s drift)
-- [x] Stable session choice (sticky playing session, no flicker)
+- [x] Session priority: music app > other > browser, longest playing wins,
+      ties use `GetCurrentSession()`; paused falls back to most recent
 - [x] Transport commands + seek (`media_toggle/next/prev/seek`, 150 ms fast
-      polling for 1.5 s)
-- [x] Position interpolation in UI from `positionMs`/`capturedAtMs`/rate
+      polling for 1.5 s); commands target only the displayed session object
+- [x] Position interpolation in UI from `positionMs`/`capturedAtMs`/rate;
+      whole-second labels floored so elapsed + remaining = duration
 - [x] Source label map
 - [ ] System volume (IAudioEndpointVolume)
 - [x] Idle home state when no session
@@ -138,6 +140,33 @@ Tauri 2 shell scaffolded:
 - Settings file creation/load/save implemented (atomic temp+rename), stores NotchSettings, notesFolder, calendarAccounts, timerCustomTimes
 - Commands: settings_get, settings_set
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
+
+## Last session (Phase 3C part 1 — session priority, clock, single-target controls)
+Session choice is now a pure `choose_candidate()` over `SessionInfo` +
+`SessionHistory` (unit-tested): each AUMID is classified (case-insensitive
+substring) as music (Spotify, Apple Music/iTunes, YouTube Music, Amazon Music,
+Tidal, Deezer), other, or browser (Chrome, Edge, Brave, Firefox, Opera,
+Vivaldi). Every session's `playing_since` and `last_playing_at` are kept per key
+(AUMID, plus `#index` when two sessions share one). Among playing sessions the
+lowest class wins, then the earliest `playing_since`; a tie prefers
+`GetCurrentSession()`, then `GetSessions()` order. With nothing playing the most
+recent `last_playing_at` wins, then the current session, then none. Switches log
+the key, app ID, class and reason; `FLOAT_DEBUG=1` also logs each session ID
+once so unknown apps (e.g. a YouTube Music PWA reporting a browser AUMID) can
+be added to the lists.
+
+Clock: elapsed and remaining are whole floored seconds, so remaining is
+`floor(duration) - floor(position)` and the two always add up. `capturedAtMs` is
+taken right after the timeline read, before art. With `FLOAT_DEBUG=1` the shown
+session logs raw position, `LastUpdatedTime`, rate, corrected position and
+`capturedAtMs` every 5 s.
+
+Controls: the poll thread stores the chosen
+`GlobalSystemMediaTransportControlsSession` object itself; commands call
+`TryTogglePlayPauseAsync` / `TrySkipNextAsync` / `TrySkipPreviousAsync` /
+`TryChangePlaybackPositionAsync` on that object and never re-find a session by
+AUMID or fall back to `GetCurrentSession()`, so exactly one app is affected.
+Every command logs the app ID and its bool result. No media-key simulation.
 
 ## Last session (Phase 3B — accurate position, stable session, working controls)
 Position: `TimelineProperties.Position()` is only the value at
@@ -426,3 +455,4 @@ Half-done / follow-ups:
 - Panel state: `AppState` open/pinned/rect, double-Alt decides open/close in Rust, Esc + outside-click `close-request`, Alt tracker reset on open/close.
 - Music 3A: `music.rs` SMTC poll thread (MTA, 500 ms), cached `media_snapshot`, state-only `media-state`, base64 art + AUMID source labels; real mediaService + interpolated progress + art glow; no fake songs in Tauri mode.
 - Music 3B: position corrected from `LastUpdatedTime` + `PlaybackRate` (seek resync >1.5 s), stable sticky session choice, `media_toggle/next/prev/seek` over an mpsc channel with 2 s timeout + 150 ms fast polling; frontend transport/scrubber wired.
+- Music 3C.1: pure class/priority chooser (music > other > browser, earliest playing, current-session tie-break, paused fallback) with history keyed by AUMID (+index), floored clock labels, 5 s `FLOAT_DEBUG` diagnostics, and commands sent only to the stored displayed session object.
