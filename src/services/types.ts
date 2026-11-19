@@ -8,6 +8,7 @@ export type Track = {
   /** Real SMTC fields (absent on mock tracks). */
   artDataUrl?: string | null;
   playing?: boolean;
+  playbackRate?: number;
   positionMs?: number;
   durationMs?: number | null;
   capturedAtMs?: number;

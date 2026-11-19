@@ -20,6 +20,70 @@ function formatTime(seconds: number) {
   return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}`;
 }
 
+function TransportControls({
+  playing,
+  onPlayingChange,
+  onSkip,
+}: {
+  playing: boolean;
+  onPlayingChange: (playing: boolean) => void;
+  onSkip: (direction: number) => void;
+}) {
+  return (
+    <>
+      <PressButton
+        className="grid h-[22px] w-[22px] place-items-center rounded-full hover:bg-white/[0.06]"
+        aria-label="Previous track"
+        onClick={(event) => {
+          event.stopPropagation();
+          onSkip(-1);
+        }}
+      >
+        <Rewind className="h-[17px] w-[17px] fill-white text-white" strokeWidth={1.2} />
+      </PressButton>
+      <PressButton
+        className="relative grid h-[26px] w-[26px] place-items-center rounded-full text-white hover:bg-white/[0.07]"
+        aria-label={playing ? "Pause" : "Play"}
+        onClick={(event) => {
+          event.stopPropagation();
+          onPlayingChange(!playing);
+        }}
+      >
+        <motion.span
+          className="absolute"
+          animate={{
+            opacity: playing ? 1 : 0,
+            scale: playing ? 1 : 0.55,
+            rotate: playing ? 0 : -20,
+          }}
+        >
+          <Pause className="h-[22px] w-[22px] fill-white" strokeWidth={0} />
+        </motion.span>
+        <motion.span
+          className="absolute"
+          animate={{
+            opacity: playing ? 0 : 1,
+            scale: playing ? 0.55 : 1,
+            rotate: playing ? 20 : 0,
+          }}
+        >
+          <Play className="ml-0.5 h-[22px] w-[22px] fill-white" strokeWidth={0} />
+        </motion.span>
+      </PressButton>
+      <PressButton
+        className="grid h-[22px] w-[22px] place-items-center rounded-full hover:bg-white/[0.06]"
+        aria-label="Next track"
+        onClick={(event) => {
+          event.stopPropagation();
+          onSkip(1);
+        }}
+      >
+        <SkipForward className="h-[17px] w-[17px] fill-white text-white" strokeWidth={1.2} />
+      </PressButton>
+    </>
+  );
+}
+
 export function MusicCard({
   track,
   playing,
@@ -28,6 +92,7 @@ export function MusicCard({
   onPlayingChange,
   onSkip,
   onScrub,
+  onScrubCommit,
   onVolumeChange,
 }: {
   track: Track;
@@ -37,6 +102,7 @@ export function MusicCard({
   onPlayingChange: (playing: boolean) => void;
   onSkip: (direction: number) => void;
   onScrub: (progress: number) => void;
+  onScrubCommit: (progress: number) => void;
   onVolumeChange: (volume: number) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -165,19 +231,19 @@ export function MusicCard({
             {formatTime(progress)}
           </span>
           <div className="group relative flex h-3 flex-1 items-center">
-            {isMockMode && (
-              <input
-                aria-label="Track progress"
-                type="range"
-                min="0"
-                max={totalSeconds}
-                step="0.1"
-                value={progress}
-                onChange={(event) => onScrub(Number(event.target.value))}
-                onClick={(event) => event.stopPropagation()}
-                className="media-range absolute inset-0 z-10 w-full cursor-pointer opacity-0"
-              />
-            )}
+            <input
+              aria-label="Track progress"
+              type="range"
+              min="0"
+              max={totalSeconds}
+              step="0.1"
+              value={progress}
+              onChange={(event) => onScrub(Number(event.target.value))}
+              onPointerUp={(event) => onScrubCommit(Number(event.currentTarget.value))}
+              onKeyUp={(event) => onScrubCommit(Number(event.currentTarget.value))}
+              onClick={(event) => event.stopPropagation()}
+              className="media-range absolute inset-0 z-10 w-full cursor-pointer opacity-0"
+            />
             <div className="h-1 w-full overflow-hidden rounded-full bg-white/15 transition-[height] duration-150 group-hover:h-1.5">
               <div className="h-full rounded-full bg-white" style={{ width: `${percent}%` }} />
             </div>
@@ -204,55 +270,11 @@ export function MusicCard({
             <Captions className="h-4 w-4" strokeWidth={1.7} />
           </PressButton>
           <div className="ml-auto flex items-center gap-1">
-            <PressButton
-              className="grid h-[22px] w-[22px] place-items-center rounded-full hover:bg-white/[0.06]"
-              aria-label="Previous track"
-              onClick={(event) => {
-                event.stopPropagation();
-                onSkip(-1);
-              }}
-            >
-              <Rewind className="h-[17px] w-[17px] fill-white text-white" strokeWidth={1.2} />
-            </PressButton>
-            <PressButton
-              className="relative grid h-[26px] w-[26px] place-items-center rounded-full text-white hover:bg-white/[0.07]"
-              aria-label={playing ? "Pause" : "Play"}
-              onClick={(event) => {
-                event.stopPropagation();
-                onPlayingChange(!playing);
-              }}
-            >
-              <motion.span
-                className="absolute"
-                animate={{
-                  opacity: playing ? 1 : 0,
-                  scale: playing ? 1 : 0.55,
-                  rotate: playing ? 0 : -20,
-                }}
-              >
-                <Pause className="h-[22px] w-[22px] fill-white" strokeWidth={0} />
-              </motion.span>
-              <motion.span
-                className="absolute"
-                animate={{
-                  opacity: playing ? 0 : 1,
-                  scale: playing ? 0.55 : 1,
-                  rotate: playing ? 20 : 0,
-                }}
-              >
-                <Play className="ml-0.5 h-[22px] w-[22px] fill-white" strokeWidth={0} />
-              </motion.span>
-            </PressButton>
-            <PressButton
-              className="grid h-[22px] w-[22px] place-items-center rounded-full hover:bg-white/[0.06]"
-              aria-label="Next track"
-              onClick={(event) => {
-                event.stopPropagation();
-                onSkip(1);
-              }}
-            >
-              <SkipForward className="h-[17px] w-[17px] fill-white text-white" strokeWidth={1.2} />
-            </PressButton>
+            <TransportControls
+              playing={playing}
+              onPlayingChange={onPlayingChange}
+              onSkip={onSkip}
+            />
           </div>
           <div className="relative">
             <PressButton
@@ -295,8 +317,16 @@ export function MusicCard({
           </div>
         </div>
       ) : (
-        // Transport + volume are not wired to SMTC yet (Phase 3B).
-        <div className="h-[22px]" />
+        // Real mode: transport is wired to SMTC; lyrics/volume are not yet.
+        <div className="flex h-[22px] items-center justify-center text-white/75">
+          <div className="flex items-center gap-1">
+            <TransportControls
+              playing={playing}
+              onPlayingChange={onPlayingChange}
+              onSkip={onSkip}
+            />
+          </div>
+        </div>
       )}
     </motion.div>
   );

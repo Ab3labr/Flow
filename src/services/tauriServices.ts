@@ -37,6 +37,7 @@ type MediaPayload = {
   artist: string;
   source: string;
   playing: boolean;
+  playbackRate: number;
   positionMs: number;
   durationMs: number | null;
   artDataUrl: string | null;
@@ -60,6 +61,7 @@ function toTrack(payload: MediaPayload): Track {
     colors: ["#3a3a3a", "#242424", "#141414"],
     artDataUrl: payload.artDataUrl,
     playing: payload.playing,
+    playbackRate: payload.playbackRate,
     positionMs: payload.positionMs,
     capturedAtMs: payload.capturedAtMs,
   };
@@ -120,4 +122,19 @@ export const mediaService = {
       mediaListeners.delete(handler);
     };
   },
+  /** Rust runs these on the music thread and returns SMTC's bool result. */
+  toggle: (): Promise<boolean> => command("media_toggle"),
+  next: (): Promise<boolean> => command("media_next"),
+  prev: (): Promise<boolean> => command("media_prev"),
+  seek: (positionMs: number): Promise<boolean> =>
+    command("media_seek", { positionMs: Math.round(positionMs) }),
 };
+
+async function command(name: string, args?: Record<string, unknown>): Promise<boolean> {
+  try {
+    return await invoke<boolean>(name, args);
+  } catch (error) {
+    console.error(`${name} failed`, error);
+    return false;
+  }
+}

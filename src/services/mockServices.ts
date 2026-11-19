@@ -94,6 +94,10 @@ export const mediaService = {
   getSnapshot: async (): Promise<Track | null> => null,
   subscribe: async (_handler: (track: Track | null) => void): Promise<() => void> =>
     () => {},
+  toggle: async (): Promise<boolean> => false,
+  next: async (): Promise<boolean> => false,
+  prev: async (): Promise<boolean> => false,
+  seek: async (_positionMs: number): Promise<boolean> => false,
 };
 
 export const calendarService = {

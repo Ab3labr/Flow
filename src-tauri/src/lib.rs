@@ -13,6 +13,10 @@ pub fn run() {
       settings_get,
       settings_set,
       music::media_snapshot,
+      music::media_toggle,
+      music::media_next,
+      music::media_prev,
+      music::media_seek,
       window_mode::set_ui_mode
     ])
     .setup(|app| {

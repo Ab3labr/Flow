@@ -104,6 +104,7 @@ export function Notch() {
   const [trackIndex, setTrackIndex] = useState(0);
   const [playing, setPlaying] = useState(true);
   const [progress, setProgress] = useState(108);
+  const [scrubbing, setScrubbing] = useState(false);
   const [realTrack, setRealTrack] = useState<Track | null>(null);
   const [mediaReady, setMediaReady] = useState(isMockMode);
   const [volume, setVolume] = useState(68);
@@ -268,7 +269,7 @@ export function Notch() {
 
   // Mock playback advances locally (browser prototype).
   useEffect(() => {
-    if (!isMockMode || !playing || !track) return;
+    if (!isMockMode || !playing || !track || scrubbing) return;
     const duration = trackSeconds(track);
     const id = window.setInterval(() => {
       setProgress((current) => {
@@ -282,21 +283,22 @@ export function Notch() {
       });
     }, 100);
     return () => window.clearInterval(id);
-  }, [playing, track, mockTracks.length]);
+  }, [playing, track, mockTracks.length, scrubbing]);
 
   // Real playback: interpolate from the last state change (positionMs is only
   // sent when the track/status changes, not on every poll tick).
   useEffect(() => {
-    if (isMockMode || !realTrack?.playing) return;
+    if (isMockMode || !realTrack?.playing || scrubbing) return;
     const base = realTrack.positionMs ?? 0;
     const capturedAt = realTrack.capturedAtMs ?? Date.now();
+    const rate = realTrack.playbackRate ?? 1;
     const duration = trackSeconds(realTrack);
     const id = window.setInterval(() => {
-      const next = (base + (Date.now() - capturedAt)) / 1000;
+      const next = (base + (Date.now() - capturedAt) * rate) / 1000;
       setProgress(duration > 0 ? Math.min(next, duration) : next);
     }, 100);
     return () => window.clearInterval(id);
-  }, [realTrack]);
+  }, [realTrack, scrubbing]);
 
   useEffect(() => {
     if (!timerRunning) return;
@@ -432,9 +434,41 @@ export function Notch() {
   };
 
   const skip = (direction: number) => {
-    if (!isMockMode || mockTracks.length === 0) return;
-    setTrackIndex((index) => (index + direction + mockTracks.length) % mockTracks.length);
-    setProgress(0);
+    if (isMockMode) {
+      if (mockTracks.length === 0) return;
+      setTrackIndex((index) => (index + direction + mockTracks.length) % mockTracks.length);
+      setProgress(0);
+      return;
+    }
+    void (direction < 0 ? mediaService.prev() : mediaService.next());
+  };
+
+  const togglePlayback = (nextPlaying: boolean) => {
+    // Optimistic; the next media-state is authoritative.
+    setPlaying(nextPlaying);
+    if (!isMockMode) void mediaService.toggle();
+  };
+
+  const scrub = (value: number) => {
+    setScrubbing(true);
+    setProgress(value);
+  };
+
+  const commitScrub = (value: number) => {
+    setScrubbing(false);
+    setProgress(value);
+    if (isMockMode) return;
+    // Keep interpolating from the dropped handle until the next event arrives.
+    setRealTrack((current) =>
+      current
+        ? {
+            ...current,
+            positionMs: Math.round(value * 1000),
+            capturedAtMs: Date.now(),
+          }
+        : current,
+    );
+    void mediaService.seek(Math.round(value * 1000));
   };
 
   const setPreset = (minutes: number) => {
@@ -494,9 +528,10 @@ export function Notch() {
           playing={playing}
           progress={progress}
           volume={volume}
-          onPlayingChange={isMockMode ? setPlaying : () => {}}
+          onPlayingChange={togglePlayback}
           onSkip={skip}
-          onScrub={isMockMode ? setProgress : () => {}}
+          onScrub={scrub}
+          onScrubCommit={commitScrub}
           onVolumeChange={setVolume}
         />
       )}

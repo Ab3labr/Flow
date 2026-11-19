@@ -47,8 +47,12 @@ not started / in progress / done / blocked
 - [x] Now playing snapshot + events (session/props/playback/timeline)
 - [x] Art → data URL (cached by title+artist, ≤1.5 MB); 8x8 canvas glow;
       duration null handling
-- [ ] Transport commands + seek (Phase 3B; no controls in real mode yet)
-- [x] Position interpolation in UI from `positionMs`/`capturedAtMs`
+- [x] Position corrected from `LastUpdatedTime` + `PlaybackRate`; seek resync
+      (>1.5 s drift)
+- [x] Stable session choice (sticky playing session, no flicker)
+- [x] Transport commands + seek (`media_toggle/next/prev/seek`, 150 ms fast
+      polling for 1.5 s)
+- [x] Position interpolation in UI from `positionMs`/`capturedAtMs`/rate
 - [x] Source label map
 - [ ] System volume (IAudioEndpointVolume)
 - [x] Idle home state when no session
@@ -135,6 +139,38 @@ Tauri 2 shell scaffolded:
 - Commands: settings_get, settings_set
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
 
+## Last session (Phase 3B — accurate position, stable session, working controls)
+Position: `TimelineProperties.Position()` is only the value at
+`LastUpdatedTime()`, so it now advances by `(now - lastUpdated) * PlaybackRate`
+while `Playing` (rate defaults to 1.0 when null/error). Zero or future
+`LastUpdatedTime` and negative elapsed time are ignored. The result is clamped
+to the track duration when one exists, `playbackRate` is part of the payload,
+and the UI interpolates with it. Unit tests cover paused, +15 s, rate 2.0,
+zero/future timestamps and end clamping.
+
+Resync: on each poll the UI-projected position (last emitted `positionMs` +
+elapsed × rate, clamped) is compared with the corrected one; more than 1500 ms
+difference emits a fresh `media-state`. A switch of chosen session also emits
+immediately.
+
+Session choice is now stable: (a) keep the shown session while it is still
+`Playing`; (b) `GetCurrentSession()` if playing; (c) first playing session;
+(d) the paused current session; else none. Every switch logs the AUMID, so two
+playing apps no longer flicker.
+
+Controls: a std mpsc channel carries `Toggle` / `Next` / `Prev` / `Seek(ms)` to
+the `float-media` thread, which resolves the shown session by AUMID and calls
+`TryTogglePlayPauseAsync`, `TrySkipNextAsync`, `TrySkipPreviousAsync` or
+`TryChangePlaybackPositionAsync(ms * 10_000)`. Tauri commands
+(`media_toggle/next/prev/seek`) wrap the wait in `spawn_blocking` with a 2 s
+timeout, so the async runtime never blocks on WinRT. A command switches polling
+to 150 ms for 1.5 s, then back to 500 ms; false/error results are logged.
+
+Frontend: play/pause updates immediately then follows the next `media-state`;
+previous/next call the commands; the scrubber (only when duration is known)
+moves the bar while dragging and sends `media_seek` on pointer/key release. The
+dropped position is used optimistically for interpolation until the next event.
+
 ## Last session (Phase 3A — real now playing)
 Done: `src-tauri/src/music.rs` polls Windows SMTC on one dedicated
 `float-media` thread (`RoInitialize(RO_INIT_MULTITHREADED)`, 500 ms). It picks
@@ -165,11 +201,9 @@ the art (gradient fallback), samples an 8×8 canvas average for the glow, hides
 the progress row when `durationMs` is null, and hides the not-yet-wired
 transport/volume controls in real mode.
 
-Half-done / follow-ups:
-- Transport (play/pause/skip/seek) and system volume are Phase 3B; real mode
-  intentionally has no working controls yet.
-- Seeks that don't change title/status don't emit; the next state change or a
-  `media_snapshot` call picks up the new position.
+Half-done / follow-ups (superseded by Phase 3B):
+- Transport (play/pause/skip/seek) and seek resync landed in Phase 3B; system
+  volume is still pending.
 - Base64 is hand-written to avoid a one-use dependency.
 
 ## Last session (Rust-owned panel open state + three close paths)
@@ -391,3 +425,4 @@ Half-done / follow-ups:
 - Settings: `settingsVersion` 2 migration, live `RwLock` state for both triggers, suppression-reason logs, redesigned toggle (white/#000 on, #2a2a2a/#8a8a8a off, dimmed label, focus ring), optimistic save + revert.
 - Panel state: `AppState` open/pinned/rect, double-Alt decides open/close in Rust, Esc + outside-click `close-request`, Alt tracker reset on open/close.
 - Music 3A: `music.rs` SMTC poll thread (MTA, 500 ms), cached `media_snapshot`, state-only `media-state`, base64 art + AUMID source labels; real mediaService + interpolated progress + art glow; no fake songs in Tauri mode.
+- Music 3B: position corrected from `LastUpdatedTime` + `PlaybackRate` (seek resync >1.5 s), stable sticky session choice, `media_toggle/next/prev/seek` over an mpsc channel with 2 s timeout + 150 ms fast polling; frontend transport/scrubber wired.
