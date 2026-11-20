@@ -246,6 +246,10 @@ pub fn apply(
   bar_width: f64,
   bar_height: f64,
   pinned: bool,
+  // Logical panel state from the target surface. During a collapse the
+  // physical `mode` is still Open while this is already false, so triggers
+  // (double-Alt, Esc, outside click) act on the intended state immediately.
+  open: bool,
 ) -> Result<(), String> {
   let app = window.app_handle();
   let cursor = app.cursor_position().map_err(|err| err.to_string())?;
@@ -283,7 +287,6 @@ pub fn apply(
     },
     UiPhase::Expanding | UiPhase::Collapsing => (true, mode != UiMode::Idle),
   };
-  let open = mode == UiMode::Open;
   let pinned_state = if open {
     if phase == UiPhase::Stable {
       pinned
@@ -330,7 +333,7 @@ pub fn apply(
     window.hide().map_err(|err| err.to_string())?;
   }
 
-  PANEL_CLOSED.store(mode == UiMode::Idle, Ordering::Relaxed);
+  PANEL_CLOSED.store(!open, Ordering::Relaxed);
   let was_open = state.is_open();
   state.set(open, pinned_state, panel_height, panel);
   if was_open != open {
@@ -351,16 +354,20 @@ pub fn set_ui_mode(
   bar_height: f64,
   pinned: bool,
   phase: Option<String>,
+  // Optional for older frontends; defaults to the physical mode.
+  logical_open: Option<bool>,
 ) -> Result<(), String> {
+  let parsed_mode = UiMode::parse(&mode)?;
   apply(
     &window,
     state.inner(),
-    UiMode::parse(&mode)?,
+    parsed_mode,
     UiPhase::parse(phase.as_deref()),
     panel_height,
     bar_width,
     bar_height,
     pinned,
+    logical_open.unwrap_or(parsed_mode == UiMode::Open),
   )
 }
 

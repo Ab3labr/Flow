@@ -103,7 +103,10 @@ not started / in progress / done / blocked
       phase, skips duplicate applies, and keeps the morphing window click-through
 - [x] Single final resize per morph after the spring settles; idle shrink/hide
       and compact width changes follow the same path
-- [x] `pnpm test` expanded to 15 frontend tests; Rust adds phase parsing test
+- [x] `pnpm test` expanded to 16 frontend tests; Rust adds phase parsing test
+- [x] Follow-up fixes: center the compact bar inside the morphing container so
+      it does not slide during a width change; keep Rust's logical `open` state
+      tied to the target surface so a quick double-Alt during a collapse reopens
 
 ### Phase 4 — Timer (Rust-authoritative)
 - [ ] end-timestamp state machine, commands, `timer-state` events
@@ -211,7 +214,14 @@ toward, so no intermediate idle sliver or early resize appears. `set_ui_mode`
 gained a backward-compatible `phase` argument and deduplicates applied geometry,
 so repeated bar-width reports do not cause repeated native resizes.
 
-Verification: `pnpm build`, `pnpm test` (15 passing), `pnpm exec tsc --noEmit`,
+Follow-up review found two issues and fixed them: the compact bar layer was
+left-aligned in the growing container (it slid sideways during a morph) and is
+now centered; Rust's `panel_open`/`PANEL_CLOSED` were derived from the held
+physical mode, so a double-Alt inside the ~320 ms collapse window was treated as
+another close. `set_ui_mode` now takes an optional `logical_open` flag from the
+target surface; triggers use that while geometry/visibility still use `mode`.
+
+Verification: `pnpm build`, `pnpm test` (16 passing), `pnpm exec tsc --noEmit`,
 `cargo check`, and `cargo test` (81 passing) all succeed. No activity priorities
 or business rules changed.
 

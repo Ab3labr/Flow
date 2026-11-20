@@ -112,7 +112,7 @@ the cursor, y=0. Because it is centered for every width, panel
 `left-1/2 -translate-x-1/2` stays screen-centered at any window width.
 
 State-driven geometry + input (Rust owns, frontend reports via the
-`set_ui_mode(mode, phase, panel_height, bar_width, bar_height, pinned)` command):
+`set_ui_mode(mode, phase, panel_height, bar_width, bar_height, pinned, logical_open)` command):
 - **idle:** `set_ignore_cursor_events(true)` and hidden.
 - **pill:** `(bar width + 32) x (bar height + 18)` logical, centered on the top
   edge, input accepted. The single compact live bar is 120-260 x 30 (or the
@@ -123,6 +123,10 @@ State-driven geometry + input (Rust owns, frontend reports via the
   until Motion settles, then the frontend sends the final stable plan. Both
   transitional phases set `set_ignore_cursor_events(true)` so the temporary
   larger window cannot capture clicks. Missing phases are treated as `stable`.
+- **logical_open:** the target panel state, separate from the physical `mode`
+  held during a collapse. Triggers (double-Alt, Esc, outside click) read this,
+  so a quick gesture right after closing reopens instead of closing again.
+  Optional for older frontends; defaults to `mode == "open"`.
 
 Every mode is horizontally centered, y=0, on the monitor under the cursor,
 computed in physical px with that monitor's `scale_factor`. Rust drops repeated

@@ -1085,7 +1085,7 @@ export function Notch() {
           ) : surface === "compact" && topActivity ? (
             <motion.div
               key="compact"
-              className="absolute inset-x-0 top-0 h-[30px]"
+              className="absolute inset-x-0 top-0 flex h-[30px] justify-center"
               initial={
                 reducedMotion
                   ? { opacity: 0 }

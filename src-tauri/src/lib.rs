@@ -69,6 +69,7 @@ pub fn run() {
           0.0,
           0.0,
           false,
+          false,
         ) {
           log::warn!("failed to apply startup idle mode: {err}");
           let _ = window.set_ignore_cursor_events(true);

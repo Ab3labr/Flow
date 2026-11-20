@@ -22,12 +22,16 @@ export type WindowTransition = {
 };
 
 export type WindowPlan = {
+  /** Physical mode Rust should apply right now (source while collapsing). */
   mode: UiMode;
   phase: UiPhase;
   panelHeight: number;
   barWidth: number;
   barHeight: number;
   pinned: boolean;
+  /** Logical panel state, from the target surface. Triggers use this, so a
+   * quick double-Alt during a collapse reopens instead of closing again. */
+  open: boolean;
 };
 
 const SURFACE_RANK: Record<Surface, number> = { idle: 0, compact: 1, open: 2 };
@@ -113,6 +117,7 @@ export function planWindow(
       phase: "stable",
       ...geometry,
       pinned,
+      open: target.surface === "open",
     };
   }
 
@@ -124,6 +129,7 @@ export function planWindow(
     phase,
     ...geometry,
     pinned: source.surface === "open" ? pinned : false,
+    open: target.surface === "open",
   };
 }
 
@@ -135,5 +141,5 @@ export function planKey(plan: WindowPlan): string {
       : plan.mode === "pill"
         ? `w${Math.round(plan.barWidth)}h${Math.round(plan.barHeight)}`
         : "";
-  return `${plan.mode}|${plan.phase}|${plan.pinned}|${dimensions}`;
+  return `${plan.mode}|${plan.phase}|${plan.open}|${plan.pinned}|${dimensions}`;
 }

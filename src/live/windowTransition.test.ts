@@ -29,6 +29,8 @@ test("open to compact collapses while Rust holds the open window", () => {
   assert.equal(plan.phase, "collapsing");
   assert.equal(plan.panelHeight, 250);
   assert.equal(plan.pinned, false);
+  // Physical window is still open, but triggers must already see it closed.
+  assert.equal(plan.open, false);
 });
 
 test("compact to open expands into the target panel geometry", () => {
@@ -41,6 +43,7 @@ test("compact to open expands into the target panel geometry", () => {
   assert.equal(plan.phase, "expanding");
   assert.equal(plan.panelHeight, 340);
   assert.equal(plan.pinned, true);
+  assert.equal(plan.open, true);
 });
 
 test("idle to compact grows before the bar appears", () => {
@@ -76,6 +79,18 @@ test("identical geometry needs no transition", () => {
   const plan = planWindow(null, current, false);
   assert.equal(plan.phase, "stable");
   assert.equal(plan.mode, "pill");
+});
+
+test("logical open follows the target during a collapse", () => {
+  const open = target("open", { panelHeight: 250 });
+  for (const to of [target("compact"), target("idle")]) {
+    const plan = planWindow({ from: open, to }, to, true);
+    assert.equal(plan.mode, "open");
+    assert.equal(plan.open, false);
+    // The held window keeps its pin until the final stable plan clears it.
+    assert.equal(plan.pinned, true);
+  }
+  assert.equal(planWindow(null, open, false).open, true);
 });
 
 test("plan keys ignore dimensions Rust does not use", () => {

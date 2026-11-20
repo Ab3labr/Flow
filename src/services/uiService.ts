@@ -34,6 +34,7 @@ export function setUiMode(plan: WindowPlan): void {
     pinned: plan.pinned,
     barWidth: plan.barWidth,
     barHeight: plan.barHeight,
+    open: plan.open,
   }).catch((error) => {
     // Allow a retry if the command failed; Rust also dedupes at the API layer.
     lastPlanKey = null;
