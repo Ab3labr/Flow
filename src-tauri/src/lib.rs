@@ -1,6 +1,6 @@
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 mod music;
 mod power;
@@ -19,6 +19,7 @@ pub fn run() {
       music::media_prev,
       music::media_seek,
       window_mode::set_ui_mode,
+      window_mode::ui_ready,
       fullscreen_active
     ])
     .setup(|app| {
@@ -57,7 +58,8 @@ pub fn run() {
       // Rust owns open/pinned/rect for the close triggers.
       app.manage(window_mode::AppState::default());
 
-      // Startup mode is idle: hidden and click-through.
+      // Startup mode is idle: hidden and click-through. The webview is not
+      // allowed to open anything until it calls `ui_ready` (see ui_ready).
       {
         let state = app.state::<window_mode::AppState>();
         if let Err(err) = window_mode::apply(
@@ -75,6 +77,12 @@ pub fn run() {
           let _ = window.set_ignore_cursor_events(true);
           let _ = window.hide();
         }
+        if music::debug_enabled() {
+          log::info!(
+            "[window] startup: mode=idle phase=stable logical_open=false ui_ready=false window_visible={} ignore_cursor=true",
+            window.is_visible().unwrap_or(false)
+          );
+        }
       }
 
       let handle = app.handle();
@@ -88,20 +96,16 @@ pub fn run() {
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id().as_ref() {
           "open-float" => {
-            if let Err(err) = app.emit(
-              "open-request",
+            window_mode::emit_open_request(
+              app,
               serde_json::json!({ "source": "tray", "pinned": true }),
-            ) {
-              log::warn!("failed to emit open-request: {err}");
-            }
+            );
           }
           "settings" => {
-            if let Err(err) = app.emit(
-              "open-request",
+            window_mode::emit_open_request(
+              app,
               serde_json::json!({ "tab": "settings", "source": "tray", "pinned": true }),
-            ) {
-              log::warn!("failed to emit open-request: {err}");
-            }
+            );
           }
           "quit" => app.exit(0),
           _ => {}

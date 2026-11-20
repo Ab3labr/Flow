@@ -67,12 +67,15 @@ activity or retracts to the sliver.
   an hour), tabular numerals. Hover reveals a small stop button; clicking the
   rest opens the Capture tab pinned.
 - **Charging:** transient, priority **95**, **4000 ms**, `hover: "none"`.
-  Rust polls `GetSystemPowerStatus` every 2 s and emits `power-state` only on
-  an AC or percent change held for 1 s, never at startup. Plug → green bolt
-  (`#30d158`) and "Charging" ("Charged" at 100%); unplug → battery icon,
-  "Battery", red (`#ff453a`) at 20% or less. Trailing text is the percentage
-  (`—` when unknown). Percent-only updates refresh the visible slot without
-  restarting its 4 s lifetime. Controlled live by `compactCharging`.
+  Rust polls `GetSystemPowerStatus` every 500 ms, emits a changed AC state on
+  the same poll, then holds further AC flips behind an 800 ms flicker guard;
+  the first reading at startup is a silent baseline. Plug → green bolt
+  (`#30d158`) and "Charging" ("Charged" at 100% or more); unplug → battery
+  icon, "Battery", red (`#ff453a`) at 20% or less. The label never uses the
+  BatteryFlag charging bit. Trailing text is the percentage, omitted when it is
+  unknown. A transition starts the 4 s slot; a percent-only update refreshes a
+  visible slot without restarting its lifetime and is ignored when nothing is
+  visible. Controlled live by `compactCharging`.
 - **Timer:** persistent, priority **60**. 14px remaining/total ring + `M:SS`;
   paused is dimmed with a pause icon. Hover expands to Timer. `maxWidth` 170.
 - **Timer done:** transient, priority **90**, **5000 ms**. Preserved pulse

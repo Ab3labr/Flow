@@ -17,10 +17,23 @@ UI/UX
 - Notes folder picker deferred to Phase 8. Webex matches webex.com. Recurrence: server-side for Google/Outlook, RRULE crate for ICS.
 - Charging/unplugging shows a 4 s transient compact-bar activity (priority 95,
   no hover); percent-only updates refresh it without restarting its lifetime.
+  A percent-only drain never opens the bar: with nothing visible it is ignored.
+  The label comes from the AC state and percent, never the BatteryFlag charging
+  bit; an unknown percent shows the label alone.
 - The notch and compact bar are one window/container. During a morph the window
   is click-through and keeps the source geometry (collapse) or grows first
   (expand); Rust gets one start plan and one final stable plan, not per-frame
   resizes.
+- `set_ui_mode` carries an explicit `logical_open` flag (JS camelCase
+  `logicalOpen`, built by `uiModeArgs`): triggers act on the target surface, so
+  a collapsing panel is already logically closed while its geometry is held.
+- Startup handshake: all frontend Tauri listeners register through
+  `listenerRegistry`, then `ui_ready` lets Rust reset to idle/stable/
+  logical_open=false and flush triggers queued before readiness (at most one
+  per kind). The first plan after `ui_ready` bypasses the planKey dedupe.
+- Open-request watchdog: no `set_ui_mode` within 400 ms means log a warning,
+  apply the visible open geometry (payload `pinned` preserved), re-emit once;
+  any received plan clears the pending watchdog.
 
 ## Dependency justifications
 
@@ -46,8 +59,9 @@ Phase 1
 
 Phase 3D-4
 - windows `Win32_System_Power` feature (no new crate): `GetSystemPowerStatus`
-  is the Win32 API for AC/battery state; the poll runs on its own 2 s thread
-  and all decision logic stays pure and cross-platform testable.
+  is the Win32 API for AC/battery state; 500 ms poll, immediate emit on change,
+  800 ms flicker guard, and all decision logic stays pure and cross-platform
+  testable.
 
 Phase 8
 - tauri-plugin-autostart: launch at startup

@@ -4,9 +4,10 @@
 //! The frontend reports the desired mode; Rust owns size, position and
 //! click-through. Geometry is pure so DPI behaviour is unit-tested.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
-use tauri::{Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
+use std::time::Duration;
+use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
 
 /// Extra height below the panel (shadow bleed).
 pub const PANEL_BLEED: f64 = 40.0;
@@ -61,6 +62,20 @@ struct PanelInfo {
   rect: PanelRect,
 }
 
+/// Current physical mode/phase, mirrored for trigger diagnostics.
+#[derive(Default)]
+struct ModePhase {
+  mode: UiMode,
+  phase: UiPhase,
+}
+
+/// At most one pending payload per trigger kind, delivered after `ui_ready`.
+#[derive(Default)]
+struct TriggerQueue {
+  open: Option<serde_json::Value>,
+  close: Option<serde_json::Value>,
+}
+
 /// Rust-owned panel state. Managed with `app.manage(...)`; the trigger hooks
 /// read it to decide open/close without asking the frontend.
 #[derive(Default)]
@@ -68,6 +83,9 @@ pub struct AppState {
   panel_open: AtomicBool,
   panel_pinned: AtomicBool,
   panel: Mutex<PanelInfo>,
+  mode_phase: Mutex<ModePhase>,
+  ui_ready: AtomicBool,
+  queued: Mutex<TriggerQueue>,
 }
 
 impl AppState {
@@ -79,6 +97,20 @@ impl AppState {
   /// True when the open panel was opened pinned (keyboard, tray, click).
   pub fn is_pinned(&self) -> bool {
     self.panel_pinned.load(Ordering::Relaxed)
+  }
+
+  /// False until the webview has registered every Tauri listener.
+  pub fn is_ui_ready(&self) -> bool {
+    self.ui_ready.load(Ordering::Relaxed)
+  }
+
+  /// Phase/mode the trigger diagnostics report.
+  pub fn mode(&self) -> UiMode {
+    self.lock_mode_phase().mode
+  }
+
+  pub fn phase(&self) -> UiPhase {
+    self.lock_mode_phase().phase
   }
 
   #[allow(dead_code)]
@@ -98,12 +130,80 @@ impl AppState {
     }
   }
 
+  fn lock_mode_phase(&self) -> std::sync::MutexGuard<'_, ModePhase> {
+    match self.mode_phase.lock() {
+      Ok(guard) => guard,
+      Err(poisoned) => poisoned.into_inner(),
+    }
+  }
+
+  fn lock_queue(&self) -> std::sync::MutexGuard<'_, TriggerQueue> {
+    match self.queued.lock() {
+      Ok(guard) => guard,
+      Err(poisoned) => poisoned.into_inner(),
+    }
+  }
+
   fn set(&self, open: bool, pinned: bool, height: f64, rect: PanelRect) {
     self.panel_open.store(open, Ordering::Relaxed);
     self.panel_pinned.store(pinned, Ordering::Relaxed);
     let mut info = self.lock_info();
     info.height = height;
     info.rect = rect;
+  }
+
+  fn set_mode_phase(&self, mode: UiMode, phase: UiPhase) {
+    let mut info = self.lock_mode_phase();
+    info.mode = mode;
+    info.phase = phase;
+  }
+
+  /// Forces the closed/idle bookkeeping even when `apply` dedupes geometry.
+  fn mark_closed(&self) {
+    PANEL_CLOSED.store(true, Ordering::Relaxed);
+    self.panel_open.store(false, Ordering::Relaxed);
+    self.panel_pinned.store(false, Ordering::Relaxed);
+  }
+
+  fn set_ui_ready(&self) {
+    self.ui_ready.store(true, Ordering::Relaxed);
+  }
+
+  fn queue(&self, kind: TriggerKind, payload: serde_json::Value) {
+    let mut queue = self.lock_queue();
+    match kind {
+      TriggerKind::Open => queue.open = Some(payload),
+      TriggerKind::Close => queue.close = Some(payload),
+    }
+  }
+
+  /// Drains queued triggers, open before close. Used once by `ui_ready`.
+  fn take_queued(&self) -> Vec<(TriggerKind, serde_json::Value)> {
+    let mut queue = self.lock_queue();
+    let mut out = Vec::new();
+    if let Some(payload) = queue.open.take() {
+      out.push((TriggerKind::Open, payload));
+    }
+    if let Some(payload) = queue.close.take() {
+      out.push((TriggerKind::Close, payload));
+    }
+    out
+  }
+}
+
+/// Trigger event kinds; at most one of each is queued before `ui_ready`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerKind {
+  Open,
+  Close,
+}
+
+impl TriggerKind {
+  fn event(self) -> &'static str {
+    match self {
+      Self::Open => "open-request",
+      Self::Close => "close-request",
+    }
   }
 }
 
@@ -125,8 +225,9 @@ pub fn panel_screen_rect(
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UiMode {
+  #[default]
   Idle,
   Pill,
   Open,
@@ -134,8 +235,9 @@ pub enum UiMode {
 
 /// Frontend/Rust handshake for a morph. Expanding grows before content moves;
 /// collapsing holds the source geometry until Motion has settled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UiPhase {
+  #[default]
   Stable,
   Expanding,
   Collapsing,
@@ -235,6 +337,16 @@ pub fn window_rect(
   }
 }
 
+/// What `apply` actually did, for the `FLOAT_DEBUG=1` plan log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApplyOutcome {
+  pub deduped: bool,
+  pub visible: bool,
+  pub width: u32,
+  pub height: u32,
+  pub ignore_cursor: bool,
+}
+
 /// Applies `mode` to the window, anchored to the monitor under the cursor.
 /// Also records open/pinned + the panel rect for the trigger hooks.
 pub fn apply(
@@ -250,7 +362,7 @@ pub fn apply(
   // physical `mode` is still Open while this is already false, so triggers
   // (double-Alt, Esc, outside click) act on the intended state immediately.
   open: bool,
-) -> Result<(), String> {
+) -> Result<ApplyOutcome, String> {
   let app = window.app_handle();
   let cursor = app.cursor_position().map_err(|err| err.to_string())?;
   let monitor = app
@@ -305,6 +417,7 @@ pub fn apply(
     open,
     pinned: pinned_state,
   };
+  state.set_mode_phase(mode, phase);
   let unchanged = {
     let mut applied = lock_applied();
     if *applied == Some(desired) {
@@ -314,8 +427,15 @@ pub fn apply(
       false
     }
   };
+  let outcome = ApplyOutcome {
+    deduped: unchanged,
+    visible,
+    width: rect.width,
+    height: rect.height,
+    ignore_cursor,
+  };
   if unchanged {
-    return Ok(());
+    return Ok(outcome);
   }
 
   window
@@ -341,7 +461,176 @@ pub fn apply(
     crate::triggers::reset_alt_tracker(if open { "panel opened" } else { "panel closed" });
   }
 
-  Ok(())
+  Ok(outcome)
+}
+
+/// Increments on every `set_ui_mode` the frontend sends. The open-request
+/// watchdog compares this before/after its 400 ms wait.
+static PLAN_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// How long Rust waits for a plan after an open-request before forcing one.
+const OPEN_WATCHDOG_MS: u64 = 400;
+/// Panel height used by the watchdog when no plan has ever supplied one.
+const WATCHDOG_PANEL_HEIGHT: f64 = 172.0;
+
+fn note_plan_received() {
+  PLAN_SEQ.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Emits a trigger once the webview has registered its listeners. Before
+/// `ui_ready`, only the newest payload per kind is kept: startup hover or
+/// double-Alt is then delivered instead of being emitted into a page with no
+/// listener yet.
+pub fn emit_trigger(app: &tauri::AppHandle, kind: TriggerKind, payload: serde_json::Value) {
+  let state = app.state::<AppState>();
+  let debug = crate::music::debug_enabled();
+  if !state.is_ui_ready() {
+    state.queue(kind, payload.clone());
+    log::info!(
+      "[trigger] {} queued until ui_ready logical_open={} mode={:?} phase={:?} payload={}",
+      kind.event(),
+      state.is_open(),
+      state.mode(),
+      state.phase(),
+      payload
+    );
+    return;
+  }
+  if debug {
+    log::info!(
+      "[trigger] {} emitted logical_open={} mode={:?} phase={:?} payload={}",
+      kind.event(),
+      state.is_open(),
+      state.mode(),
+      state.phase(),
+      payload
+    );
+  } else {
+    log::info!("[trigger] {} emitted payload={}", kind.event(), payload);
+  }
+  if let Err(err) = app.emit(kind.event(), payload.clone()) {
+    log::warn!("failed to emit {}: {err}", kind.event());
+  }
+  if kind == TriggerKind::Open {
+    start_open_watchdog(app, payload);
+  }
+}
+
+pub fn emit_open_request(app: &tauri::AppHandle, payload: serde_json::Value) {
+  emit_trigger(app, TriggerKind::Open, payload);
+}
+
+pub fn emit_close_request(app: &tauri::AppHandle, payload: serde_json::Value) {
+  emit_trigger(app, TriggerKind::Close, payload);
+}
+
+/// If the frontend does not answer an open-request with a plan within 400 ms,
+/// force the open geometry (visible, interactive) and re-emit once. This is a
+/// safety net for a suspended webview; it never arms a second watchdog.
+fn start_open_watchdog(app: &tauri::AppHandle, payload: serde_json::Value) {
+  let token = PLAN_SEQ.load(Ordering::Relaxed);
+  let app = app.clone();
+  let spawned = std::thread::Builder::new()
+    .name("float-open-watchdog".into())
+    .spawn(move || {
+      std::thread::sleep(Duration::from_millis(OPEN_WATCHDOG_MS));
+      if PLAN_SEQ.load(Ordering::Relaxed) != token {
+        return;
+      }
+      log::warn!(
+        "no set_ui_mode within {OPEN_WATCHDOG_MS} ms after open-request; forcing open geometry and re-emitting once"
+      );
+      if let Some(window) = app.get_webview_window("main") {
+        let state = app.state::<AppState>();
+        let height = state.panel_height();
+        let height = if height > 0.0 {
+          height
+        } else {
+          WATCHDOG_PANEL_HEIGHT
+        };
+        // Keep keyboard/tray opens pinned so an outside click still closes them.
+        let pinned = payload
+          .get("pinned")
+          .and_then(|value| value.as_bool())
+          .unwrap_or(false);
+        match apply(
+          &window,
+          state.inner(),
+          UiMode::Open,
+          UiPhase::Stable,
+          height,
+          0.0,
+          0.0,
+          pinned,
+          true,
+        ) {
+          Ok(outcome) => log::warn!(
+            "open watchdog applied: deduped={} visible={} size={}x{} ignore_cursor={}",
+            outcome.deduped,
+            outcome.visible,
+            outcome.width,
+            outcome.height,
+            outcome.ignore_cursor
+          ),
+          Err(err) => log::warn!("open watchdog apply failed: {err}"),
+        }
+      }
+      if let Err(err) = app.emit("open-request", payload) {
+        log::warn!("open watchdog re-emit failed: {err}");
+      }
+    });
+  if let Err(err) = spawned {
+    log::warn!("failed to start open-request watchdog: {err}");
+  }
+}
+
+/// Called by the frontend after every Tauri listener is registered: reset Rust
+/// to idle/stable/logical_open=false, then deliver anything queued.
+#[tauri::command]
+pub fn ui_ready(
+  window: WebviewWindow,
+  state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+  let debug = crate::music::debug_enabled();
+  let panel_height = state.panel_height();
+  let outcome = apply(
+    &window,
+    state.inner(),
+    UiMode::Idle,
+    UiPhase::Stable,
+    panel_height,
+    0.0,
+    0.0,
+    false,
+    false,
+  )?;
+  state.mark_closed();
+  crate::triggers::reset_alt_tracker("ui ready (idle)");
+  // Take before flipping ready, then take again: a trigger racing this call is
+  // either queued (and delivered) or emitted directly, never dropped.
+  let mut queued = state.take_queued();
+  state.set_ui_ready();
+  queued.extend(state.take_queued());
+  if debug {
+    log::info!(
+      "[window] ui_ready: idle/stable logical_open=false ({}) visible={} size={}x{} ignore_cursor={}",
+      if outcome.deduped { "deduped" } else { "applied" },
+      window.is_visible().unwrap_or(false),
+      outcome.width,
+      outcome.height,
+      outcome.ignore_cursor
+    );
+  }
+  if debug {
+    log::info!(
+      "[window] ui_ready delivering {} queued trigger(s)",
+      queued.len()
+    );
+  }
+  for (kind, payload) in queued {
+    emit_trigger(&window.app_handle(), kind, payload);
+  }
+  Ok(debug)
 }
 
 #[tauri::command]
@@ -357,18 +646,44 @@ pub fn set_ui_mode(
   // Optional for older frontends; defaults to the physical mode.
   logical_open: Option<bool>,
 ) -> Result<(), String> {
+  let debug = crate::music::debug_enabled();
   let parsed_mode = UiMode::parse(&mode)?;
-  apply(
+  let parsed_phase = UiPhase::parse(phase.as_deref());
+  let open = logical_open.unwrap_or(parsed_mode == UiMode::Open);
+  if debug {
+    log::info!(
+      "[window] set_ui_mode received mode={:?} phase={:?} logical_open={open} panel_height={panel_height} bar={bar_width}x{bar_height} pinned={pinned} window_visible={}",
+      parsed_mode,
+      parsed_phase,
+      window.is_visible().unwrap_or(false)
+    );
+  }
+  note_plan_received();
+  let outcome = apply(
     &window,
     state.inner(),
     parsed_mode,
-    UiPhase::parse(phase.as_deref()),
+    parsed_phase,
     panel_height,
     bar_width,
     bar_height,
     pinned,
-    logical_open.unwrap_or(parsed_mode == UiMode::Open),
-  )
+    open,
+  )?;
+  if debug {
+    log::info!(
+      "[window] set_ui_mode {} mode={:?} phase={:?} logical_open={open} visible={} size={}x{} ignore_cursor={} window_visible={}",
+      if outcome.deduped { "deduped" } else { "applied" },
+      parsed_mode,
+      parsed_phase,
+      outcome.visible,
+      outcome.width,
+      outcome.height,
+      outcome.ignore_cursor,
+      window.is_visible().unwrap_or(false)
+    );
+  }
+  Ok(())
 }
 
 #[cfg(test)]
@@ -479,7 +794,42 @@ mod tests {
     let state = AppState::default();
     assert!(!state.is_open());
     assert!(!state.is_pinned());
+    assert!(!state.is_ui_ready());
+    assert_eq!(state.mode(), UiMode::Idle);
+    assert_eq!(state.phase(), UiPhase::Stable);
     assert_eq!(state.panel_rect(), PanelRect::default());
     assert!(!state.panel_rect().contains(0, 0));
+  }
+
+  #[test]
+  fn triggers_queue_one_payload_per_kind_until_ui_ready() {
+    let state = AppState::default();
+    state.queue(TriggerKind::Open, serde_json::json!({ "source": "hover" }));
+    // A second open replaces the first: only the newest startup trigger counts.
+    state.queue(TriggerKind::Open, serde_json::json!({ "source": "alt" }));
+    state.queue(TriggerKind::Close, serde_json::json!({ "source": "esc" }));
+
+    let queued = state.take_queued();
+    assert_eq!(queued.len(), 2);
+    assert_eq!(queued[0].0, TriggerKind::Open);
+    assert_eq!(queued[0].1["source"], "alt");
+    assert_eq!(queued[1].0, TriggerKind::Close);
+    assert_eq!(queued[1].1["source"], "esc");
+    // Draining clears the queue so ui_ready delivers each kind once.
+    assert!(state.take_queued().is_empty());
+  }
+
+  #[test]
+  fn ui_ready_is_sticky() {
+    let state = AppState::default();
+    assert!(!state.is_ui_ready());
+    state.set_ui_ready();
+    assert!(state.is_ui_ready());
+  }
+
+  #[test]
+  fn trigger_event_names_match_the_frontend_contract() {
+    assert_eq!(TriggerKind::Open.event(), "open-request");
+    assert_eq!(TriggerKind::Close.event(), "close-request");
   }
 }

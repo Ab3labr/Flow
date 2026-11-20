@@ -6,6 +6,7 @@ import {
   retargetTransition,
   targetKey,
   transitionPhase,
+  uiModeArgs,
   type WindowGeometry,
   type WindowTarget,
 } from "./windowTransition.ts";
@@ -101,6 +102,16 @@ test("plan keys ignore dimensions Rust does not use", () => {
   const pinnedA = planWindow(null, target("compact"), false);
   const pinnedB = planWindow(null, target("compact"), true);
   assert.notEqual(planKey(pinnedA), planKey(pinnedB));
+});
+
+test("set_ui_mode args send logicalOpen (Tauri camelCase), never open", () => {
+  const plan = planWindow(null, target("open", { panelHeight: 250 }), true);
+  const args = uiModeArgs(plan);
+  assert.equal(args.logicalOpen, true);
+  assert.equal("open" in args, false);
+  assert.equal(args.mode, "open");
+  assert.equal(args.panelHeight, 250);
+  assert.equal(args.pinned, true);
 });
 
 test("reverse direction keeps the original source until settling", () => {

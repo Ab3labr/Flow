@@ -136,6 +136,15 @@ container, so there is no intermediate idle sliver between them. Startup mode
 is idle. Rust still owns `panel-state` for future pill sources; today the
 frontend owns transient TTLs.
 
+Startup handshake: every Tauri listener registers through
+`services/listenerRegistry.ts`; once all of them settle the frontend calls the
+`ui_ready` command, Rust resets to idle/stable/`logical_open=false`, resets the
+Alt tracker and flushes triggers queued before readiness (at most one per kind,
+newest wins). The first plan after `ui_ready` is force-sent past the planKey
+dedupe, so both sides are guaranteed to agree. An emitted `open-request` arms a
+400 ms watchdog: if no plan arrives, Rust logs a warning, applies the visible
+open geometry (payload `pinned` preserved) and re-emits the event once.
+
 Intents frontend→Rust: `set_ui_mode` command (geometry/input/pinned), settings
 commands. Rust→frontend: `open-request` (tray/hot zone/double-Alt),
 `close-request` (double-Alt/Esc/outside click),
@@ -210,6 +219,18 @@ blocking task, 2 s timeout) for a bool. The thread resolves the shown session by
 AUMID and calls `TryTogglePlayPauseAsync`, `TrySkipNextAsync`,
 `TrySkipPreviousAsync` or `TryChangePlaybackPositionAsync(ms * 10_000)`. After
 a command it polls every 150 ms for 1.5 s.
+
+### Power / charging (Phase 3D-4)
+One `float-power` thread calls `GetSystemPowerStatus` every 500 ms. Pure
+`decide()` keeps the silent startup baseline and emits
+`power-state` `{pluggedIn, charging, percent, transition}` on the same poll
+that sees a changed AC or percent signal. After an emitted AC change it starts an 800 ms
+flicker guard: further AC flips are held and the final reading wins with one
+corrected event. Percent-only changes emit `transition: "none"` immediately
+and never move the AC guard. A charging-bit-only change is not part of the
+signal, so it never emits; no battery or unknown AC resets the baseline
+silently. `FLOAT_DEBUG=1` logs a timestamp/delta for change detection and
+emission (and sets `window.FLOAT_DEBUG` so the webview logs its own stages).
 
 ### Persistence
 `%APPDATA%\Float\settings.json` via `app.path().app_config_dir()`:

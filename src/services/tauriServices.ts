@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { debugLog } from "./debugLog";
+import { registerTauriListener } from "./listenerRegistry";
 import type { NotchSettings, PowerState, Track } from "./types";
 
 type AppSettings = {
@@ -37,9 +39,13 @@ const powerListeners = new Set<(state: PowerState) => void>();
 
 function ensurePowerStarted(): Promise<void> {
   if (!powerStarted) {
-    powerStarted = listen<PowerState>("power-state", (event) => {
-      for (const listener of powerListeners) listener(event.payload);
-    }).then(() => {});
+    powerStarted = registerTauriListener(
+      listen<PowerState>("power-state", (event) => {
+        for (const listener of powerListeners) listener(event.payload);
+      }),
+    ).then(() => {
+      debugLog("[ui] listener registered: power-state");
+    });
   }
   return powerStarted;
 }
@@ -111,16 +117,19 @@ function isOlderThanCurrent(capturedAtMs: number | undefined): boolean {
 function ensureMediaStarted(): Promise<void> {
   if (mediaStarted) return mediaStarted;
   mediaStarted = (async () => {
-    await listen<MediaPayload | null>("media-state", (event) => {
-      // Pushed events are newer than any in-flight snapshot response.
-      mediaEventSeen = true;
-      if (!event.payload) {
-        publishMedia(null);
-        return;
-      }
-      if (isOlderThanCurrent(event.payload.capturedAtMs)) return;
-      publishMedia(toTrack(event.payload));
-    });
+    await registerTauriListener(
+      listen<MediaPayload | null>("media-state", (event) => {
+        // Pushed events are newer than any in-flight snapshot response.
+        mediaEventSeen = true;
+        if (!event.payload) {
+          publishMedia(null);
+          return;
+        }
+        if (isOlderThanCurrent(event.payload.capturedAtMs)) return;
+        publishMedia(toTrack(event.payload));
+      }),
+    );
+    debugLog("[ui] listener registered: media-state");
 
     try {
       const snapshot = await invoke<MediaPayload | null>("media_snapshot");

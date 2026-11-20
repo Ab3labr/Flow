@@ -133,6 +133,24 @@ export function planWindow(
   };
 }
 
+/**
+ * Arguments for the `set_ui_mode` command. Tauri renames Rust parameters to
+ * camelCase, so the optional `logical_open` flag must be sent as
+ * `logicalOpen`; sending `open` silently fell back to `mode == "open"` and
+ * made Rust believe a collapsing panel was still open.
+ */
+export function uiModeArgs(plan: WindowPlan) {
+  return {
+    mode: plan.mode,
+    phase: plan.phase,
+    panelHeight: plan.panelHeight,
+    pinned: plan.pinned,
+    barWidth: plan.barWidth,
+    barHeight: plan.barHeight,
+    logicalOpen: plan.open,
+  };
+}
+
 /** IPC commands are skipped when the effective window state is unchanged. */
 export function planKey(plan: WindowPlan): string {
   const dimensions =

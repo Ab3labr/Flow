@@ -10,15 +10,17 @@ import {
   powerService,
   settingsService,
   type NotchSettings,
-  type PowerState,
   type Track,
 } from "../services";
+import { powerActivity, reducePowerEvent } from "../live/powerActivity";
+import { debugLog } from "../services/debugLog";
 import { isMockMode, isTauriApp } from "../services/env";
 import {
   focusNotchWindow,
   isFullscreenAppActive,
   onCloseRequest,
   onOpenRequest,
+  uiReady,
 } from "../services/uiService";
 import {
   COMPACT_BAR_HEIGHT,
@@ -79,34 +81,11 @@ function formatTimer(seconds: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
-/** A `power-state` event becomes a 4 s transient compact-bar slot. */
-function powerActivity(state: PowerState): LiveActivity {
-  const low = !state.pluggedIn && state.percent != null && state.percent <= 20;
-  const color = low ? "#ff453a" : "#30d158";
-  const label = state.pluggedIn
-    ? state.percent === 100 ? "Charged" : "Charging"
-    : "Battery";
-  return {
-    id: "charging",
-    kind: "charging",
-    mode: "transient",
-    ttlMs: 4_000,
-    priority: LIVE_PRIORITIES.charging,
-    accent: color,
-    leading: {
-      type: "icon",
-      name: state.pluggedIn ? "charging" : "battery",
-      color,
-    },
-    label,
-    trailing: {
-      type: "text",
-      value: state.percent == null ? "—" : `${state.percent}%`,
-      color,
-    },
-    hover: "none",
-    maxWidth: 200,
-  };
+/** FLOAT_DEBUG=1 (Rust also sets window.FLOAT_DEBUG) enables stage timings. */
+function powerDebugEnabled(): boolean {
+  if (import.meta.env.VITE_FLOAT_DEBUG === "1") return true;
+  const flag = (window as Window & { FLOAT_DEBUG?: unknown }).FLOAT_DEBUG;
+  return flag === "1" || flag === true;
 }
 
 function IdleHome({
@@ -197,6 +176,7 @@ export function Notch() {
   const musicRemoveTimer = useRef<number | undefined>(undefined);
   const powerHideTimer = useRef<number | undefined>(undefined);
   const powerVisible = useRef(false);
+  const powerStage = useRef({ receivedAt: 0, registeredAt: 0, visibleLogged: false });
   const visibleAccounts = settings.noCalendars ? [] : accounts;
   const events = useMemo(
     () => calendarService.getToday(visibleAccounts),
@@ -257,7 +237,8 @@ export function Notch() {
   }, [recording, recordingDisplay, settings.compactBar, settings.compactRecording]);
 
   const timerActivity = useMemo<LiveActivity | null>(() => {
-    if (!timerActive || timerComplete || !settings.compactBar || !settings.compactTimer) return null;
+    if (!timerActive || timerComplete || !settings.compactBar || !settings.compactTimer)
+      return null;
     return {
       id: "timer",
       kind: "timer",
@@ -310,7 +291,7 @@ export function Notch() {
     }),
     [surface, panelHeight, barWidth],
   );
-  const { transitioning } = useWindowTransition(
+  const { transitioning, resend } = useWindowTransition(
     windowTarget,
     pinned,
     Boolean(reducedMotion),
@@ -469,20 +450,47 @@ export function Notch() {
     void powerService
       .subscribe((state) => {
         if (disposed) return;
-        const activity = powerActivity(state);
-        if (state.transition !== "none" || !powerVisible.current) {
-          register(activity);
-          powerVisible.current = true;
-          window.clearTimeout(powerHideTimer.current);
-          powerHideTimer.current = window.setTimeout(stopPower, 4_000);
+        const debug = powerDebugEnabled();
+
+        if (debug) {
+          powerStage.current.receivedAt = performance.now();
+          console.info(
+            `[power] stage 3 received t=${Math.round(powerStage.current.receivedAt)}ms transition=${state.transition}`,
+          );
+        }
+
+        // A percent-only drain must not create the bar (BUG 2).
+        const action = reducePowerEvent(state, powerVisible.current);
+        if (action === "ignore") {
+          if (debug) console.info("[power] ignored: no visible slot");
           return;
         }
+
+        const activity = powerActivity(state);
+        if (action === "register") {
+          register(activity);
+          powerVisible.current = true;
+          powerStage.current.visibleLogged = false;
+          window.clearTimeout(powerHideTimer.current);
+          powerHideTimer.current = window.setTimeout(stopPower, 4_000);
+          if (debug) {
+            powerStage.current.registeredAt = performance.now();
+            console.info(
+              `[power] stage 4 registered delta=${Math.round(
+                powerStage.current.registeredAt - powerStage.current.receivedAt,
+              )}ms`,
+            );
+          }
+          return;
+        }
+
         update("charging", {
           accent: activity.accent,
           leading: activity.leading,
           label: activity.label,
           trailing: activity.trailing,
         });
+        if (debug) console.info("[power] updated percent (timer unchanged)");
       })
       .then((unsubscribe) => {
         if (disposed) unsubscribe();
@@ -496,6 +504,18 @@ export function Notch() {
       stopPower();
     };
   }, [settings.compactBar, settings.compactCharging, register, remove, update]);
+
+  // Debug-only: time from activity registration to the bar becoming visible.
+  useEffect(() => {
+    if (!powerDebugEnabled()) return;
+    if (surface !== "compact" || topActivity?.id !== "charging") return;
+    if (powerStage.current.visibleLogged || powerStage.current.registeredAt === 0) return;
+    powerStage.current.visibleLogged = true;
+    const delta = performance.now() - powerStage.current.registeredAt;
+    console.info(
+      `[power] stage 5 bar visible delta=${Math.round(delta)}ms${delta > 150 ? " (>150ms)" : ""}`,
+    );
+  }, [surface, topActivity]);
 
   // Fullscreen suppression mirrors the Rust hover trigger.
   useEffect(() => {
@@ -743,6 +763,22 @@ export function Notch() {
       window.removeEventListener("pointerdown", onPointer);
     };
   }, [close, settings.altAlt, settings.shortcut]);
+
+  // Runs after every listener effect above. Rust stays closed and queues
+  // triggers until this fires, then the first plan is force-sent so both
+  // sides start from the same state (startup notch bug).
+  useEffect(() => {
+    let cancelled = false;
+    debugLog(`[ui] ready effect mounted visibility=${document.visibilityState}`);
+    void uiReady()
+      .then(() => {
+        if (!cancelled) resend();
+      })
+      .catch((error) => console.error("ui_ready failed", error));
+    return () => {
+      cancelled = true;
+    };
+  }, [resend]);
 
   const openFromEdge = () => {
     // The real app opens from the Rust hot-zone poll; this 1 px strip only
@@ -1002,8 +1038,7 @@ export function Notch() {
         onPointerEnter={enterPanel}
         onPointerLeave={leaveTarget}
         animate={{
-          width:
-            surface === "open" ? 480 : surface === "compact" ? barWidth : IDLE_BAR_WIDTH,
+          width: surface === "open" ? 480 : surface === "compact" ? barWidth : IDLE_BAR_WIDTH,
           height:
             surface === "open"
               ? panelHeight
@@ -1019,9 +1054,7 @@ export function Notch() {
           height: reducedMotion ? { duration: 0.15 } : SURFACE_SPRING,
           borderBottomLeftRadius: reducedMotion ? { duration: 0.15 } : SURFACE_SPRING,
           borderBottomRightRadius: reducedMotion ? { duration: 0.15 } : SURFACE_SPRING,
-          opacity: reducedMotion
-            ? { duration: 0.15 }
-            : { duration: 0.22, ease: CONTENT_EASE },
+          opacity: reducedMotion ? { duration: 0.15 } : { duration: 0.22, ease: CONTENT_EASE },
         }}
       >
         <AnimatePresence initial={false}>
@@ -1039,9 +1072,7 @@ export function Notch() {
                   : { opacity: 0, filter: "blur(6px)", y: 6, scale: 0.985 }
               }
               animate={
-                reducedMotion
-                  ? { opacity: 1 }
-                  : { opacity: 1, filter: "blur(0px)", y: 0, scale: 1 }
+                reducedMotion ? { opacity: 1 } : { opacity: 1, filter: "blur(0px)", y: 0, scale: 1 }
               }
               exit={
                 reducedMotion
@@ -1087,14 +1118,10 @@ export function Notch() {
               key="compact"
               className="absolute inset-x-0 top-0 flex h-[30px] justify-center"
               initial={
-                reducedMotion
-                  ? { opacity: 0 }
-                  : { opacity: 0, filter: "blur(6px)", scale: 1.03 }
+                reducedMotion ? { opacity: 0 } : { opacity: 0, filter: "blur(6px)", scale: 1.03 }
               }
               animate={
-                reducedMotion
-                  ? { opacity: 1 }
-                  : { opacity: 1, filter: "blur(0px)", scale: 1 }
+                reducedMotion ? { opacity: 1 } : { opacity: 1, filter: "blur(0px)", scale: 1 }
               }
               exit={
                 reducedMotion

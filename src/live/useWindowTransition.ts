@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { setUiMode } from "../services/uiService";
+import { debugLog } from "../services/debugLog";
 import {
   planWindow,
   retargetTransition,
@@ -16,9 +17,10 @@ export function useWindowTransition(
   target: WindowTarget,
   pinned: boolean,
   reducedMotion: boolean,
-): { transitioning: boolean } {
+): { transitioning: boolean; resend: () => void } {
   const [transition, setTransition] = useState<WindowTransition | null>(null);
   const settled = useRef<WindowTarget>(target);
+  const rafSeen = useRef(false);
   const key = targetKey(target);
 
   // Start a morph on the first geometry change; retarget it if the user
@@ -36,7 +38,8 @@ export function useWindowTransition(
   // Use the pending transition during this render so Rust never receives a
   // stable plan for a frame where the visual state is already changing.
   const effectiveTransition: WindowTransition | null =
-    transition ?? (key === targetKey(settled.current) ? null : { from: settled.current, to: target });
+    transition ??
+    (key === targetKey(settled.current) ? null : { from: settled.current, to: target });
   const fromKey = effectiveTransition ? targetKey(effectiveTransition.from) : null;
   const toKey = effectiveTransition ? targetKey(effectiveTransition.to) : null;
 
@@ -45,6 +48,9 @@ export function useWindowTransition(
     if (!transition) return;
     const id = window.setTimeout(
       () => {
+        debugLog(
+          `[morph] end ${toKey} visibility=${document.visibilityState} rafRunning=${rafSeen.current}`,
+        );
         settled.current = transition.to;
         setTransition(null);
       },
@@ -53,10 +59,50 @@ export function useWindowTransition(
     return () => window.clearTimeout(id);
   }, [fromKey, toKey, reducedMotion, transition]);
 
+  // A hidden WebView2 may pause rAF; logging both values makes that visible.
+  useEffect(() => {
+    if (!fromKey || !toKey) return;
+    const startedAt = performance.now();
+    rafSeen.current = false;
+    debugLog(`[morph] start ${fromKey} -> ${toKey} visibility=${document.visibilityState}`);
+    requestAnimationFrame(() => {
+      rafSeen.current = true;
+      debugLog(
+        `[morph] rAF running +${Math.round(performance.now() - startedAt)}ms visibility=${document.visibilityState}`,
+      );
+    });
+  }, [fromKey, toKey]);
+
   const plan = planWindow(effectiveTransition, target, pinned);
+  const planRef = useRef(plan);
+  useEffect(() => {
+    planRef.current = plan;
+  }, [
+    plan.barHeight,
+    plan.barWidth,
+    plan.mode,
+    plan.open,
+    plan.panelHeight,
+    plan.pinned,
+    plan.phase,
+  ]);
+
   useEffect(() => {
     setUiMode(plan);
-  }, [plan.barHeight, plan.barWidth, plan.mode, plan.panelHeight, plan.pinned, plan.phase]);
+  }, [
+    plan.barHeight,
+    plan.barWidth,
+    plan.mode,
+    plan.open,
+    plan.panelHeight,
+    plan.pinned,
+    plan.phase,
+  ]);
 
-  return { transitioning: effectiveTransition !== null };
+  // Re-sends the latest plan after the ui_ready handshake, bypassing dedupe.
+  const resend = useCallback(() => {
+    setUiMode(planRef.current, true);
+  }, []);
+
+  return { transitioning: effectiveTransition !== null, resend };
 }

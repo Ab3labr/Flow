@@ -8,17 +8,13 @@
 
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "windows")]
-use tauri::Emitter;
-
 /// Logs and emits `close-request {source}`. Rust owns the open/close decision;
-/// the frontend just obeys.
+/// the frontend just obeys. Routed through the window-mode gate so a close
+/// during startup is queued until `ui_ready` instead of being lost.
 #[cfg(target_os = "windows")]
 pub fn emit_close_request(app: &tauri::AppHandle, source: &str) {
   log::info!("close-request: source={source}");
-  if let Err(err) = app.emit("close-request", serde_json::json!({ "source": source })) {
-    log::warn!("failed to emit close-request: {err}");
-  }
+  crate::window_mode::emit_close_request(app, serde_json::json!({ "source": source }));
 }
 
 
@@ -158,7 +154,7 @@ pub fn foreground_fullscreen_active() -> bool {
 mod imp {
   use super::{in_hot_zone, suppressed, DwellTracker, DWELL_MS};
   use std::time::{Duration, Instant};
-  use tauri::Emitter;
+  use tauri::Manager;
   use windows::Win32::Foundation::{HWND, POINT, RECT};
   use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, HMONITOR, MONITORINFO,
@@ -308,15 +304,29 @@ mod imp {
 
           // `update` always runs so the state advances even while the panel is
           // open; the event only goes out when the panel is closed.
-          if tracker.update(inside, blocked, now) && crate::window_mode::is_closed() {
-            log::info!("hot zone dwell reached, emitting open-request (hover)");
-            if let Err(err) =
-              app.emit(
-                "open-request",
+          let dwell_fired = tracker.update(inside, blocked, now);
+          if dwell_fired {
+            let state = app.state::<crate::window_mode::AppState>();
+            let closed = crate::window_mode::is_closed();
+            if crate::music::debug_enabled() {
+              log::info!(
+                "[trigger] hover dwell fired: logical_open={} mode={:?} phase={:?} ui_ready={} -> {}",
+                state.is_open(),
+                state.mode(),
+                state.phase(),
+                state.is_ui_ready(),
+                if closed {
+                  "open-request"
+                } else {
+                  "none (panel not closed)"
+                }
+              );
+            }
+            if closed {
+              crate::window_mode::emit_open_request(
+                &app,
                 serde_json::json!({ "source": "hover", "pinned": false }),
-              )
-            {
-              log::warn!("failed to emit open-request: {err}");
+              );
             }
           }
 
@@ -363,7 +373,7 @@ mod alt_hook {
   use crate::window_mode::AppState;
   use std::sync::{Mutex, MutexGuard};
   use std::time::Instant;
-  use tauri::{Emitter, Manager};
+  use tauri::Manager;
   use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
   use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, SetWindowsHookExW,
@@ -454,7 +464,8 @@ mod alt_hook {
                 log::debug!("double alt ignored (altAlt off)");
               } else {
                 // Rust decides: open when closed, close when open.
-                let open = app.state::<AppState>().is_open();
+                let state = app.state::<AppState>();
+                let open = state.is_open();
                 log::info!(
                   "double alt: panel_open={open}, emitting {}",
                   if open {
@@ -463,13 +474,22 @@ mod alt_hook {
                     "open-request (pinned)"
                   }
                 );
+                if crate::music::debug_enabled() {
+                  log::info!(
+                    "[trigger] double alt decision: logical_open={open} mode={:?} phase={:?} ui_ready={} -> {}",
+                    state.mode(),
+                    state.phase(),
+                    state.is_ui_ready(),
+                    if open { "close-request" } else { "open-request" }
+                  );
+                }
                 if open {
                   emit_close_request(&app, "alt");
-                } else if let Err(err) = app.emit(
-                  "open-request",
-                  serde_json::json!({ "source": "alt", "pinned": true }),
-                ) {
-                  log::warn!("failed to emit open-request: {err}");
+                } else {
+                  crate::window_mode::emit_open_request(
+                    &app,
+                    serde_json::json!({ "source": "alt", "pinned": true }),
+                  );
                 }
               }
             }

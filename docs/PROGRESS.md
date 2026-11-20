@@ -86,13 +86,13 @@ not started / in progress / done / blocked
 - [x] "COMPACT BAR" settings: master `compactBar` plus `compactMusic`,
       `compactTimer`, `compactRecording`, `compactCharging`; all default true
       in TypeScript and Rust (`#[serde(default = "default_true")]`)
-- [x] Phase 3D-4: Windows `GetSystemPowerStatus` thread (2 s poll), pure
-      transition logic with 1 s hold/no-battery/unknown-value tests, and
-      `power-state` service event
+- [x] Phase 3D-4: Windows `GetSystemPowerStatus` thread (500 ms poll, immediate
+      emit on change, 800 ms flicker guard), pure transition logic with
+      no-battery/unknown-value tests, and `power-state` service event
 - [x] Charging compact activity: transient/95/4000 ms, bolt or battery leading
       icon (red at ≤20%), "Charging"/"Charged"/"Battery", trailing percentage;
-      percent updates refresh without extending the TTL; `compactCharging`
-      applies live
+      percent updates refresh a visible slot without extending the TTL and never
+      open the bar on their own; `compactCharging` applies live
 
 ### Phase 3D-5B — Full notch ↔ compact bar transition
 - [x] One visual container: panel and bar are overlapping layers in the same
@@ -190,6 +190,56 @@ Tauri 2 shell scaffolded:
 - Commands: settings_get, settings_set
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
 
+## Last session (startup handshake, logical-open fix, open watchdog)
+
+Reported bug: hover / double-Alt were detected by Rust (log lines present) but
+the notch did not appear until a power event happened.
+
+Root cause: `uiService.setUiMode` sent `{open: plan.open}` while the Rust
+command parameter is `logical_open` (JS camelCase `logicalOpen`), so
+`logical_open` was always `None` and Rust fell back to `mode == "open"`. During
+a collapse Rust therefore believed the panel was still open. In addition,
+nothing gated triggers on page readiness, so events emitted while the webview
+was still loading its listeners were lost (field log: `open-request` at
+10:52:56 and 12:07:36 produced no following `set_ui_mode`, while later ones
+worked).
+
+Fixes:
+- `set_ui_mode` argument name corrected to `logicalOpen` via the pure
+  `uiModeArgs(plan)` helper (`windowTransition.ts`), tested.
+- Startup handshake: the frontend registers every Tauri listener through
+  `services/listenerRegistry.ts`; once all are settled it calls the new
+  `ui_ready` command. Rust applies Idle/Stable/logical_open=false, resets the
+  Alt tracker, marks itself ready, then delivers queued triggers (at most one
+  per kind, newest wins). All trigger emission (hover, double-Alt, Esc,
+  outside click, tray) goes through `window_mode::emit_trigger`.
+- First plan after `ui_ready` is force-sent with the planKey dedupe bypassed.
+- 400 ms open watchdog (`PLAN_SEQ` generation token): if no `set_ui_mode`
+  arrives after an emitted `open-request`, Rust logs a warning, applies the
+  open geometry (visible, interactive, payload `pinned` preserved), and
+  re-emits the event once. Any plan clears the pending watchdog.
+- Instrumentation behind `FLOAT_DEBUG=1`: startup mode/phase/logical_open/
+  visibility, every trigger decision and emit/queue reason, every received
+  `set_ui_mode` (applied or deduped with visible/size/ignore-cursor), plus webview
+  side listener registration, request receipt, setUiMode send/dedupe, morph
+  start/end `document.visibilityState` and rAF probes, all stamped with
+  `performance.now()` and routed to float.log.
+
+Evidence (real app, `FLOAT_DEBUG=1`, cursor placed in the hot zone at process
+start): hover dwell fired at 12:32:09 with `ui_ready=false` and was *queued*;
+`ui_ready` at 12:32:42 applied idle, reset the tracker and flushed the queued
+trigger; the webview received `open-request` at t=33303 ms and Rust applied
+visible 700x265 within ~18 ms. All startup JS (module start t=33231 ms,
+listeners registered t=33297 ms, handshake complete t=33357 ms) ran while the
+native window was still hidden, and `document.visibilityState` reported
+`visible` the whole time, with rAF running (+14..19 ms) - so suspect B
+(WebView2 suspending a hidden page) does not explain this failure. The old
+failure was C (event emitted before the listener existed) compounded by the dev
+webview taking ~33 s to load Vite modules.
+
+Verification: `cargo test` (85 passing), `cargo check`, `pnpm build`,
+`pnpm test` (30 passing), `pnpm exec tsc --noEmit`.
+
 ## Last session (Phase 3D-5B — unified notch/bar transition)
 Root cause: the frontend changed `uiMode` and Rust resized the window to the
 *target* geometry immediately, while Motion was still animating the container
@@ -224,6 +274,34 @@ target surface; triggers use that while geometry/visibility still use `mode`.
 Verification: `pnpm build`, `pnpm test` (16 passing), `pnpm exec tsc --noEmit`,
 `cargo check`, and `cargo test` (81 passing) all succeed. No activity priorities
 or business rules changed.
+
+## Last session (power indicator latency + percent-pop fixes)
+
+Two reported bugs: the charging bar appeared 2–4 s late after plug/unplug, and
+the bar popped up on every 1% battery drain.
+
+Rust (`src-tauri/src/power.rs`): `POLL_INTERVAL` is now 500 ms (was 2 s). A
+changed AC state is emitted on the same poll that sees it; the old "hold 1 s
+before emitting" gate is gone. After an emitted AC change an 800 ms flicker
+guard holds further AC flips, and when it expires the latest reading wins with
+one corrected event. Percent-only changes still emit `transition: "none"`
+immediately and never touch the guard. The startup reading is still a silent
+baseline; charging-bit-only changes, no-battery, and unknown-AC readings still
+emit nothing. Tests were rewritten for the new timing, plus tests for immediate
+plug/unplug, a flicker that ends in the final state, and percent-only emit.
+
+Frontend: the decision moved to the pure `reducePowerEvent(state, visible)` in
+`src/live/powerActivity.ts` — `plugged`/`unplugged` → `register`, `none` +
+visible → `update`, `none` + hidden → `ignore`. This stops a percent drain from
+creating the slot. Labels derive only from AC state and percent (never the
+BatteryFlag charging bit): plugged → "Charging", or "Charged" at ≥100%;
+unplugged → "Battery". An unknown percent shows the label with no trailing
+number. With `FLOAT_DEBUG=1` (Rust also sets `window.FLOAT_DEBUG`),
+timestamps/deltas are logged at: AC change detected, event emitted, frontend
+received, activity registered, bar visible — and the last stage flags >150 ms.
+
+Verification: `cargo test` (82 passing), `cargo check`, `pnpm build`, `pnpm test`
+and `pnpm exec tsc --noEmit` all pass.
 
 ## Last session (Phase 3D-4 — charging indicator)
 `src-tauri/src/power.rs` polls `GetSystemPowerStatus` on a dedicated 2 s thread
@@ -661,3 +739,4 @@ Half-done / follow-ups:
 - Music 3C.2: album art keyed by title+artist+album with 1 s/15 s late-arrival retries and `image` downscaling (≤256 px JPEG q85 over 400 KB), `SkipBack`/`SkipForward` icons, real card limited to centered transport (volume/lyrics/menu dropped from the UI).
 - Live 3D: reusable `src/live` activity slots + priority picker/store, music compact bar (30 px, 150–260 wide, art/initial leading, dominant-colour equalizer + 28% glow, 3 s paused hold), hover/click/close behavior, fullscreen suppression, `compactBar` setting, and frontend-sized pill geometry `(barWidth + 32) x (barHeight + 18)` with Node unit tests for `pickActivity`.
 - Album art: magic-byte format sniffing replaces `ContentType()`, non-PNG/JPEG art is re-encoded to a 256 px JPEG (unknown → PNG or null), exact `data:<mime>;base64,<data>` URL plus `FLOAT_DEBUG` head/length log, frontend `<img onError>` logs via `plugin:log|log` and shows the placeholder.
+- Startup: `ui_ready` handshake after all listeners register (pre-ready triggers queued, one per kind), `set_ui_mode` now sends `logicalOpen` via `uiModeArgs`, first post-ready plan force-sent past planKey dedupe, 400 ms open watchdog forcing visible geometry plus one re-emit, and `FLOAT_DEBUG` instrumentation on Rust trigger/plan paths and webview listener/morph/rAF timings.
