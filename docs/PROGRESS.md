@@ -109,9 +109,33 @@ not started / in progress / done / blocked
       tied to the target surface so a quick double-Alt during a collapse reopens
 
 ### Phase 4 — Timer (Rust-authoritative)
-- [ ] end-timestamp state machine, commands, `timer-state` events
-- [ ] Toast + sound on finish; compact bar integration
-- [ ] Presets/custom/+1 min wired
+- [x] Pure end-timestamp state machine (`Idle`/`Running`/`Paused`/`Done`, Unix
+      ms) with fake-clock tests; backwards clock cannot extend it
+- [x] Commands `timer_get/set/start/pause/resume/reset/adjust/restart`; each
+      returns and emits `timer-state` (no per-second events; `endsAtMs`)
+- [x] Toast + 3x MessageBeep alert on finish (`tauri-plugin-notification`);
+      failures logged without breaking the timer
+- [x] Persistence: `timerDurationMs` (25 min default), `timerLastCustomMs`
+      (non-preset starts), `timerSound`; running timer not saved across restarts
+- [x] Compact-bar integration with the Rust state (`timer-active`/`done`
+      derived from `useTimer()`; start collapses only with `compactTimer`)
+- [x] New single-focus TimerView wired: idle digits/chips, running/paused/done,
+      Space, progress + "Ends", reset/primary; custom chip from
+      `lastCustomMs` (the old ring/drag/custom/+1-min UI is gone)
+- [x] Timer activity derived from real timer state: exists only while running;
+      paused/idle/done remove it. Leading: small progress ring; label: remaining
+      time counted locally from `endsAtMs`. Priority 60, hover "expand".
+- [x] "Timer done" from `timer-done` event (5 s, priority 90): works regardless
+      of `compactTimer`, no compactBar master toggle needed for sound/toast.
+- [x] `compactTimer` semantics: ON (default): Start collapses panel into bar
+      with countdown. OFF: nothing about timer appears in bar while running;
+      panel stays open after Start; on completion still gets toast, sound and
+      "Timer done" message.
+- [x] Settings: "Timer countdown" row in COMPACT BAR section with caption
+      "Turn a row off to keep it out of the bar." Added small "TIMER" section
+      with "Timer sound" toggle (shared Toggle), applies live.
+- [x] Tests: running adds activity, pausing removes it, done removes it and
+      raises transient, `compactTimer` off removes activity.
 
 ### Phase 5 — Notes (markdown files)
 - [ ] `%USERPROFILE%\Documents\Float Notes\*.md`, slug+timestamp names
@@ -189,6 +213,115 @@ Tauri 2 shell scaffolded:
 - Settings file creation/load/save implemented (atomic temp+rename), stores NotchSettings, notesFolder, calendarAccounts, timerCustomTimes
 - Commands: settings_get, settings_set
 - Deferred: window positioning to cursor monitor, ignore-cursor-events per state, tray icon with menu (Tauri 2 tray API complexity), SettingsView wiring
+
+## Last session (Phase 4B - timer UI + real wiring)
+
+The Timer tab now talks to the Rust engine and was rebuilt as a single focus.
+
+- `tauriServices.ts` gained the real `timerService`: `get`/`subscribe` over
+  `timer-state` (listener registered through `registerTauriListener` so
+  `ui_ready` waits for it) plus `timer_get/set/start/pause/resume/reset/adjust/
+  restart`. Snapshots are de-duplicated by `capturedAtMs`. The mock service
+  keeps the same interface and state shape with a wall-clock state machine,
+  250 ms done flip, and localStorage `notch-timer-duration` /
+  `notch-timer-last-custom`.
+- `src/live/useTimer.ts` exposes state, `lastCustomMs` and `remainingMs`,
+  which is interpolated every 250 ms from `endsAtMs` while running. `Notch.tsx`
+  no longer owns a 1 s interval or `timerRemaining`/`timerRunning`/
+  `timerComplete`; compact timer/paused/done activities are derived from the
+  hook.
+- New `TimerView` (panel height 190 in every state, content centred, no card):
+  44px tabular time (`M:SS`, `H:MM:SS` from 1 h); idle −/+ hover circles
+  (tap 1 min, Shift 5, hold accelerates), wheel and ArrowUp/Down (1 min),
+  microwave digit editor with a 2px caret (Enter/Esc/click-away), four 28px
+  text chips + last custom, and a 120x36 white Start pill. Running swaps the
+  chips for a 220x2 progress line with "Ends 3:42 PM" and shows a 36px reset
+  circle + Pause; paused dims to white/60 with "Paused"/Resume; done pulses
+  `0:00` with "Time's up"/Restart. Space starts/pauses/resumes while the tab
+  is open. Chips/progress cross-fade 160 ms, hover buttons 120 ms, all
+  opacity/translate; reduced motion shortens/removes the pulse.
+- Start/Restart still collapse into the compact bar after 450 ms, gated on
+  `compactTimer`; pause/reset/done cancel a pending collapse.
+- Rust payload now also carries `lastCustomMs` for the custom chip, idle
+  `timer_adjust` persists the new `timerDurationMs`, and the engine caches the
+  last custom duration at startup.
+
+Verification: `cargo test` 96 passing, `cargo check` clean, `tsc --noEmit`
+clean, `pnpm build` succeeds, `pnpm test` 30 passing.
+
+## Last session (Phase 4B - timer UI + real wiring)
+
+The Timer tab now talks to the Rust engine and was rebuilt as a single focus.
+
+- `tauriServices.ts` gained the real `timerService`: `get`/`subscribe` over
+  `timer-state` (listener registered through `registerTauriListener` so
+  `ui_ready` waits for it) plus `timer_get/set/start/pause/resume/reset/adjust/
+  restart`. Snapshots are de-duplicated by `capturedAtMs`. The mock service
+  keeps the same interface and state shape with a wall-clock state machine,
+  250 ms done flip, and localStorage `notch-timer-duration` /
+  `notch-timer-last-custom`.
+- `src/live/useTimer.ts` exposes state, `lastCustomMs` and `remainingMs`,
+  which is interpolated every 250 ms from `endsAtMs` while running. `Notch.tsx`
+  no longer owns a 1 s interval or `timerRemaining`/`timerRunning`/
+  `timerComplete`; compact timer/paused/done activities are derived from the
+  hook.
+- New `TimerView` (panel height 190 in every state, content centred, no card):
+  44px tabular time (`M:SS`, `H:MM:SS` from 1 h); idle −/+ hover circles
+  (tap 1 min, Shift 5, hold accelerates), wheel and ArrowUp/Down (1 min),
+  microwave digit editor with a 2px caret (Enter/Esc/click-away), four 28px
+  text chips + last custom, and a 120×36 white Start pill. Running swaps the
+  chips for a 220×2 progress line with "Ends 3:42 PM" and shows a 36px reset
+  circle + Pause; paused dims to white/60 with "Paused"/Resume; done pulses
+  `0:00` with "Time's up"/Restart. Space starts/pauses/resumes while the tab
+  is open. Chips/progress cross-fade 160 ms, hover buttons 120 ms, all
+  opacity/translate; reduced motion shortens/removes the pulse.
+- Start/Restart still collapse into the compact bar after 450 ms, gated on
+  `compactTimer`; pause/reset/done cancel a pending collapse.
+- Rust payload now also carries `lastCustomMs` for the custom chip, idle
+  `timer_adjust` persists the new `timerDurationMs`, and the engine caches the
+  last custom duration at startup.
+
+Verification: `cargo test` 96 passing, `cargo check` clean, `tsc --noEmit`
+clean, `pnpm build` succeeds, `pnpm test` 30 passing.
+
+## Last session (Phase 4A - real timer engine)
+
+Rust now owns the focus timer; the frontend keeps its UI unchanged and will be
+wired to these commands/events next phase.
+
+`src-tauri/src/timer.rs` has a pure state machine (`imp`, no Tauri/Win32 types)
+with Unix-millisecond wall-clock times from `SystemTime`:
+`Idle{duration_ms}`, `Running{ends_at_ms,total_ms}`,
+`Paused{remaining_ms,total_ms}`, `Done{total_ms}`. Times keep counting through
+sleep and fire on wake; a backwards clock jump cannot extend a running timer
+(remaining is clamped to the original total and the deadline never moves).
+Operations: `set_duration` (idle only), `start`, `pause`, `resume`, `reset`,
+`adjust(delta)` (idle duration / running deadline+total / paused remaining+total,
+all clamped to 1 s..23:59:59) and `restart` (done only, same total). `tick`
+returns `Some(Done)` exactly once.
+
+Tauri layer: a shared `TimerEngine` behind an `Arc<Mutex<..>>`; a 250 ms thread
+ticks it and on completion emits `timer-done {totalMs}`, emits the fresh
+`timer-state`, plays three `MessageBeep(MB_ICONASTERISK)` 600 ms apart when
+`timerSound` is on, and shows a Windows toast "Timer done" with the formatted
+duration via `tauri-plugin-notification`. Toast/beep failures are logged and
+never break the timer. Commands: `timer_get`, `timer_set`, `timer_start`,
+`timer_pause`, `timer_resume`, `timer_reset`, `timer_adjust`,
+`timer_restart`; each mutating command returns the new snapshot and emits
+`timer-state {state, durationMs, totalMs, remainingMs, capturedAtMs,
+endsAtMs (running only)}`. No per-second events: the frontend counts down from
+`endsAtMs`.
+
+Persistence (settings.json): `timerDurationMs` (default 25 min), optional
+`timerLastCustomMs` (written when a timer starts on a non-preset duration other
+than 5/10/25 min) and `timerSound` (`#[serde(default = "default_true")]`). A
+running timer is deliberately **not** saved across app restarts; only the
+configured duration and preferences survive.
+
+Verification: `cargo test` 96 passing (10 new fake-clock tests: exact-once
+done, pause/resume rebasing, adjust in all three mutable states, sub-second
+clamping, max-duration clamp, backwards-clock behaviour, reset/restart, preset
+rule, toast formatting), `cargo check` clean, `pnpm build` succeeds.
 
 ## Last session (startup handshake, logical-open fix, open watchdog)
 
@@ -745,3 +878,5 @@ Half-done / follow-ups:
 - Live 3D: reusable `src/live` activity slots + priority picker/store, music compact bar (30 px, 150–260 wide, art/initial leading, dominant-colour equalizer + 28% glow, 3 s paused hold), hover/click/close behavior, fullscreen suppression, `compactBar` setting, and frontend-sized pill geometry `(barWidth + 32) x (barHeight + 18)` with Node unit tests for `pickActivity`.
 - Album art: magic-byte format sniffing replaces `ContentType()`, non-PNG/JPEG art is re-encoded to a 256 px JPEG (unknown → PNG or null), exact `data:<mime>;base64,<data>` URL plus `FLOAT_DEBUG` head/length log, frontend `<img onError>` logs via `plugin:log|log` and shows the placeholder.
 - Startup: `ui_ready` handshake after all listeners register (pre-ready triggers queued, one per kind), `set_ui_mode` now sends `logicalOpen` via `uiModeArgs`, first post-ready plan force-sent past planKey dedupe, 400 ms open watchdog forcing visible geometry plus one re-emit, and `FLOAT_DEBUG` instrumentation on Rust trigger/plan paths and webview listener/morph/rAF timings.
+- Phase 4A: pure wall-clock timer state machine (idle/running/paused/done), `timer_*` commands + `timer-state`/`timer-done` events, 250 ms tick thread, toast + MessageBeep alert, settings persistence (`timerDurationMs`/`timerLastCustomMs`/`timerSound`), tray tooltip unaffected; 10 fake-clock tests.
+- Phase 4B: real/mock `timerService`, `useTimer()` local 250 ms countdown, new single-focus TimerView (190 px), Space toggle, compact activities derived from the Rust snapshot, idle adjust persistence + `lastCustomMs` in the payload.

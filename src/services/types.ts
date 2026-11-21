@@ -17,6 +17,23 @@ export type Track = {
   albumTitle: string | null;
 };
 
+export type TimerStatus = "idle" | "running" | "paused" | "done";
+
+/**
+ * Rust `timer-state` payload. Times are milliseconds; `endsAtMs` exists only
+ * while running so the frontend can count down locally.
+ */
+export type TimerSnapshot = {
+  state: TimerStatus;
+  durationMs: number;
+  totalMs: number;
+  remainingMs: number;
+  capturedAtMs: number;
+  endsAtMs?: number;
+  /** Last non-preset duration that was started, if any. */
+  lastCustomMs: number | null;
+};
+
 export type PowerTransition = "plugged" | "unplugged" | "none";
 
 /** Rust `power-state` payload. `percent: null` when Windows reports 255. */

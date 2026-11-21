@@ -63,5 +63,14 @@ Phase 3D-4
   800 ms flicker guard, and all decision logic stays pure and cross-platform
   testable.
 
+Phase 4A
+- tauri-plugin-notification ^2: a native Windows toast is the only surface that
+  reaches the user while the notch is hidden; it is Tauri's official
+  notification wrapper (one capability entry, no hand-written WinRT). The
+  alert sound uses the already-required `windows` crate: `MessageBeep` lives in
+  the `Win32_System_Diagnostics_Debug` feature (plus the existing
+  `Win32_UI_WindowsAndMessaging` for `MB_ICONASTERISK`), so there is no extra
+  runtime dependency.
+
 Phase 8
 - tauri-plugin-autostart: launch at startup

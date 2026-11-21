@@ -5,7 +5,7 @@ in Tauri use logical px (same numbers at 100% scaling).
 
 ## Panel
 - Expanded width: **480 px**. Heights per tab:
-  home 172, timer 250, calendar 230, capture 185, settings 340,
+  home 172, timer 190, calendar 230, capture 185, settings 340,
   notes dynamic **172 → 340**.
 - Collapsed: invisible sliver **120x4** (opacity 0, radius 2), or the single
   compact live bar: height **30**, content-fit width **120–260** (activity
@@ -42,7 +42,7 @@ so it is typically 152–292 x 48; see docs/ARCHITECTURE.md.
 - Font: Inter (Google Fonts `@import` in index.css) with fallback stack
   `ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif`.
 - `color-scheme: dark`; body `overflow:hidden`, `user-select:none`.
-- Scale used: 30px semibold (idle clock), 25px semibold tabular (timer),
+- Scale used: 30px semibold (idle clock), 44px semibold tabular (timer),
   14px semibold (note title), 13px semibold/medium (titles, buttons),
   12px (idle date), 11px (most UI: labels, pills, rows, mono-ish times),
   10px (fake taskbar clock only).
@@ -58,9 +58,11 @@ so it is typically 152–292 x 48; see docs/ARCHITECTURE.md.
   opacity .12; controls row h-22px; play button 26px, skip/lyrics/ellipsis
   22px; volume popover w-40.
 - Progress track: h-1 (hover h-1.5, 150 ms), thumb dot 10px.
-- Timer ring: 128px box, r=63 sw=6 in 144 viewBox; handle 12px dot border
-  2px black; HoldButton 28px; presets h-7 px-3; custom pills same;
-  Start button h-9 full-width-of-column.
+- Timer: content **148px** tall (190 − 10 top − 26 TopBar − 6 gap), rows
+  gap 10; time 44px; chips 28px h, gap 6, 11px text, px 2.5; progress line
+  **220x2** radius full, caption 11px/13 mt-1.5; hover −/+ 28px circles 20px
+  from the time; primary pill **120x36** 12px semibold; reset circle 36px
+  (`#1c1c1c`); caret 2px wide, 34px tall.
 - Calendar rows: h-42px, radius 12 (`rounded-xl`), color bar 3x24 radius
   full, time col w-52px, list h-138px (96px when error banner).
   EventCard (home): w-148px, radius 14, inner block h-58 radius 9.

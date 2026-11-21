@@ -2,13 +2,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { debugLog } from "./debugLog";
 import { registerTauriListener } from "./listenerRegistry";
-import type { NotchSettings, PowerState, Track } from "./types";
+import type { NotchSettings, PowerState, TimerSnapshot, Track } from "./types";
 
 type AppSettings = {
   notch: NotchSettings;
   notesFolder: string | null;
   calendarAccounts: unknown[];
   timerCustomTimes: number[];
+  timerDurationMs: number;
+  timerLastCustomMs: number | null;
+  timerSound: boolean;
 };
 
 /** Last value read from disk, so unrelated fields survive a notch-only save. */
@@ -174,3 +177,75 @@ async function command(name: string, args?: Record<string, unknown>): Promise<bo
     return false;
   }
 }
+
+/**
+ * Rust-authoritative timer. `timer-state` carries the full snapshot; commands
+ * return the same payload, so whichever arrives last wins (`capturedAtMs`).
+ */
+const TIMER_PRESETS = [5, 10, 25];
+
+let timerStarted: Promise<void> | null = null;
+let timerSnapshot: TimerSnapshot | null = null;
+const timerListeners = new Set<(snapshot: TimerSnapshot) => void>();
+
+function publishTimer(snapshot: TimerSnapshot): void {
+  if (timerSnapshot && snapshot.capturedAtMs < timerSnapshot.capturedAtMs) return;
+  timerSnapshot = snapshot;
+  for (const listener of timerListeners) listener(snapshot);
+}
+
+function ensureTimerStarted(): Promise<void> {
+  if (timerStarted) return timerStarted;
+  timerStarted = (async () => {
+    await registerTauriListener(
+      listen<TimerSnapshot>("timer-state", (event) => publishTimer(event.payload)),
+    );
+    debugLog("[ui] listener registered: timer-state");
+
+    try {
+      publishTimer(await invoke<TimerSnapshot>("timer_get"));
+    } catch (error) {
+      console.error("timer_get failed", error);
+    }
+  })();
+  return timerStarted;
+}
+
+async function timerCommand(
+  name: string,
+  args?: Record<string, unknown>,
+): Promise<TimerSnapshot | null> {
+  try {
+    const snapshot = await invoke<TimerSnapshot>(name, args);
+    publishTimer(snapshot);
+    return snapshot;
+  } catch (error) {
+    console.error(`${name} failed`, error);
+    return null;
+  }
+}
+
+export const timerService = {
+  getPresets: (): number[] => TIMER_PRESETS,
+  get: async (): Promise<TimerSnapshot | null> => {
+    await ensureTimerStarted();
+    return timerSnapshot;
+  },
+  subscribe: async (handler: (snapshot: TimerSnapshot) => void): Promise<() => void> => {
+    await ensureTimerStarted();
+    if (timerSnapshot) handler(timerSnapshot);
+    timerListeners.add(handler);
+    return () => {
+      timerListeners.delete(handler);
+    };
+  },
+  set: (durationMs: number): Promise<TimerSnapshot | null> =>
+    timerCommand("timer_set", { durationMs: Math.round(durationMs) }),
+  start: (): Promise<TimerSnapshot | null> => timerCommand("timer_start"),
+  pause: (): Promise<TimerSnapshot | null> => timerCommand("timer_pause"),
+  resume: (): Promise<TimerSnapshot | null> => timerCommand("timer_resume"),
+  reset: (): Promise<TimerSnapshot | null> => timerCommand("timer_reset"),
+  adjust: (deltaMs: number): Promise<TimerSnapshot | null> =>
+    timerCommand("timer_adjust", { deltaMs: Math.round(deltaMs) }),
+  restart: (): Promise<TimerSnapshot | null> => timerCommand("timer_restart"),
+};

@@ -13,8 +13,8 @@ the Tauri shell works.
 ## Panel open/close (Notch.tsx)
 
 State: `expanded`, `pinned`, `tab`, timers (`hoverTimer`, `leaveTimer`,
-`completionTimer`, `dissolveTimer`), plus the shared live-activity store with
-per-transient TTL timers.
+`dissolveTimer`), plus the shared live-activity store with per-transient TTL
+timers. Timer state comes from `useTimer()` (see TimerView).
 
 ### Open triggers
 - **Hot zone:** `openFromEdge()` — pointer entering the top edge strip
@@ -103,7 +103,7 @@ from 6px blur; titles crossfade with a 5px slide (260 ms). Reduced motion uses
 150 ms fades with no blur/scale.
 
 ### Panel geometry
-Expanded: width **480**, height per tab — home 172, timer 250, calendar
+Expanded: width **480**, height per tab — home 172, timer 190, calendar
 230, capture 185, settings 340, notes dynamic 172→340. Top-center,
 top-anchored, `bg-black`, `overflow-hidden`, shadow
 `0 12px 34px rgba(0,0,0,.36)` when open or bar.
@@ -147,22 +147,40 @@ Content `mt-1.5`, `AnimatePresence mode="wait"` per tab: enter opacity
   (inert). **Real: system volume via Core Audio.**
 
 ### TimerView
-- `h-[198px]` row gap-6: SVG ring 128px (viewBox 144, r=63, stroke 6,
-  track `#232323`, white round cap, `pathLength` anim 1 s linear running /
-  0.12 s easeOut idle). Progress = remaining/total running, minutes/120 idle.
-- Drag handle (idle only): 12px white dot w/ black border on ring; drag
-  sets 1–120 min; pulses on multiples of 5. `cursor-crosshair`.
-- `-`/`+` HoldButtons (idle only): immediate tick then ~420 ms accelerating
-  to 60 ms floor, ±5 min/repeat. Digit editor: ≤5 digits, last 2 =
-  seconds, clamp 60–7200 s → rounded minutes, remembered.
-- Display 25px semibold tabular, per-second roll (y 22→0, 0.28 s).
-- Right `w-[196px]`: "FOCUS TIMER" 11px bold uppercase .08em white/40;
-  pills h-7 `bg-[#1c1c1c] px-3 text-[11px]`: presets [5,10,25] + Custom +
-  remembered (max 3, MRU; mock localStorage `notch-custom-times`) + "+1 min"
-  while running; Start/Pause/Restart `h-9 rounded-full bg-white
-  text-[12px] font-semibold text-black`.
-- Complete: ring pulse (scale 1→1.05→1, brightness 1→1.5→1) + 5 s
-  `timer-done` compact activity.
+Single focus, centred, no card background. Panel height stays **190** in every
+timer state. Smallest text is 11px.
+
+- Time: 44px semibold, tabular numerals, `-.04em`, white; `M:SS`, or
+  `H:MM:SS` from one hour. While running the display counts down locally every
+  **250 ms** from the Rust `endsAtMs` (no per-second events).
+- Idle hover: 28px ghost −/+ circles fade in 120 ms on either side of the
+  time, 20px away. Tap = 1 min, Shift = 5 min; press-and-hold repeats with the
+  existing acceleration (420 ms first delay → 60 ms floor). Wheel over the
+  time = 1 min; ArrowUp/ArrowDown = 1 min while the time is focused.
+- Digit editor (idle): click the time and type microwave-style — the last two
+  digits are seconds, so `1,5,0,0` shows `15:00`. A 2px white caret follows
+  the value; **Enter** sets it, **Esc** or a click away cancels. Clamped to
+  1 s–23:59:59.
+- Idle chips: one row of up to four 28px text-only chips, gap 6 — `5m`,
+  `10m`, `25m` and the last custom duration if it is not a preset (whole
+  minutes as `7m`, otherwise `1:30`). Selected: `#1c1c1c` background, white
+  text; the rest white/45.
+- Primary pill: 36px high, **120** wide, 12px semibold black on white — Start.
+- Running: −/+ now adjust the remaining time (1/Shift 5). The chips row
+  cross-fades (160 ms) into a 2px, 220px progress line (track white/15, white
+  fill, rounded, remaining/total) with `Ends 3:42 PM` below (11px white/40).
+  Buttons: 36px `#1c1c1c` reset circle + white Pause pill.
+- Paused: time at white/60, caption "Paused", primary Resume, reset visible.
+- Done: `0:00` with a soft opacity pulse, caption "Time's up", primary
+  Restart, reset returns to idle.
+- Motion: chips ↔ progress and the primary label cross-fade (160 ms), hover
+  buttons 120 ms; opacity/translate only, no blur. Presses use the shared
+  `whileTap` 0.92 animation.
+- Space starts/pauses/resumes while the Timer tab is open. Start/Restart
+  dissolve the panel into the compact bar after **450 ms** only when
+  `compactTimer` is on. The compact bar keeps the timer ring + `M:SS`
+  (`H:MM:SS` past an hour) from the Rust snapshot; completion raises the
+  transient `timer-done` activity (5 s).
 
 ### CalendarView
 - `h-[178px]`.

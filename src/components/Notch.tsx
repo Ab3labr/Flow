@@ -32,6 +32,7 @@ import { IDLE_BAR_HEIGHT, IDLE_BAR_WIDTH } from "../live/geometry";
 import { LIVE_PRIORITIES } from "../live/priorities";
 import type { LiveActivity } from "../live/types";
 import { useLiveActivities } from "../live/useLiveActivities";
+import { useTimer } from "../live/useTimer";
 import { useWindowTransition } from "../live/useWindowTransition";
 import type { Surface, WindowTarget } from "../live/windowTransition";
 import { CalendarView } from "./CalendarView";
@@ -45,7 +46,7 @@ import { PressButton, TabId, TopBar } from "./TopBar";
 
 const baseHeights: Record<Exclude<TabId, "notes">, number> = {
   home: 172,
-  timer: 250,
+  timer: 190,
   calendar: 230,
   capture: 185,
   settings: 340,
@@ -75,10 +76,13 @@ function formatElapsed(seconds: number): string {
   return hours > 0 ? `${hours}:${tail}` : tail;
 }
 
-/** Timer compact label: `M:SS` (no leading minute zero). */
-function formatTimer(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds));
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+/** Timer compact label: `M:SS`, or `H:MM:SS` from one hour. */
+function formatTimer(remainingMs: number): string {
+  const total = Math.max(0, Math.ceil(remainingMs / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = String(total % 60).padStart(2, "0");
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
 }
 
 /** FLOAT_DEBUG=1 (Rust also sets window.FLOAT_DEBUG) enables stage timings. */
@@ -146,11 +150,7 @@ export function Notch() {
   const [realTrack, setRealTrack] = useState<Track | null>(null);
   const [mediaReady, setMediaReady] = useState(isMockMode);
   const [volume, setVolume] = useState(68);
-  const [timerTotal, setTimerTotal] = useState(300);
-  const [timerRemaining, setTimerRemaining] = useState(300);
-  const [timerRunning, setTimerRunning] = useState(false);
-  const [timerActive, setTimerActive] = useState(false);
-  const [timerComplete, setTimerComplete] = useState(false);
+  const timer = useTimer();
   const [recording, setRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [notesHeight, setNotesHeight] = useState(172);
@@ -161,7 +161,6 @@ export function Notch() {
   const hoverTimer = useRef<number | undefined>(undefined);
   const leaveTimer = useRef<number | undefined>(undefined);
   const focusTimer = useRef<number | undefined>(undefined);
-  const completionTimer = useRef<number | undefined>(undefined);
   const dissolveTimer = useRef<number | undefined>(undefined);
   const remindedEvent = useRef<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -183,8 +182,11 @@ export function Notch() {
     [accounts, settings.noCalendars],
   );
   const recordingDisplay = formatElapsed(recordingTime);
-  const timerDisplay = formatTimer(timerRemaining);
-  const timerProgress = timerTotal > 0 ? timerRemaining / timerTotal : 0;
+  const timerRunning = timer.state === "running";
+  const timerActive = timer.state === "running" || timer.state === "paused";
+  const timerComplete = timer.state === "done";
+  const timerDisplay = formatTimer(timer.remainingMs);
+  const timerProgress = timer.totalMs > 0 ? timer.remainingMs / timer.totalMs : 0;
   const upcomingEvent = settings.upcomingEvent ? events[0] : undefined;
 
   const musicActivity = useMemo<LiveActivity | null>(() => {
@@ -236,34 +238,33 @@ export function Notch() {
     };
   }, [recording, recordingDisplay, settings.compactBar, settings.compactRecording]);
 
+  /** Derived from the real timer state (useTimer). Activity exists only while
+   *  the timer is running; paused/idle/done remove it. Leading: small progress
+   *  ring; label: remaining time counted locally from endsAtMs. */
   const timerActivity = useMemo<LiveActivity | null>(() => {
-    if (!timerActive || timerComplete || !settings.compactBar || !settings.compactTimer)
-      return null;
+    if (timer.state !== "running") return null;
+    if (!settings.compactBar) return null;
+    if (!timer.endsAtMs) return null;
+    const remainingMs = timer.remainingMs;
+    const totalMs = timer.totalMs;
+    const progress = totalMs > 0 ? remainingMs / totalMs : 0;
     return {
       id: "timer",
       kind: "timer",
       mode: "persistent",
       priority: LIVE_PRIORITIES.timer,
-      leading: { type: "ring", progress: timerProgress },
-      label: timerDisplay,
-      trailing: timerRunning ? "none" : "pause",
-      playing: timerRunning,
+      leading: { type: "ring", progress },
+      label: formatTimer(remainingMs),
+      trailing: "none",
+      playing: true,
       hover: "expand",
       expandTab: "timer",
       maxWidth: 170,
     };
-  }, [
-    timerActive,
-    timerComplete,
-    timerProgress,
-    timerDisplay,
-    timerRunning,
-    settings.compactBar,
-    settings.compactTimer,
-  ]);
+  }, [timer.state, settings.compactBar, timer.remainingMs, timer.totalMs]);
 
   const timerDoneActivity = useMemo<LiveActivity | null>(() => {
-    if (!timerComplete || !settings.compactBar || !settings.compactTimer) return null;
+    if (!timerComplete) return null;
     return {
       id: "timer-done",
       kind: "timer-done",
@@ -274,7 +275,7 @@ export function Notch() {
       label: "Timer done",
       hover: "none",
     };
-  }, [timerComplete, settings.compactBar, settings.compactTimer]);
+  }, [timerComplete]);
 
   const compact = Boolean(
     settings.compactBar &&
@@ -576,6 +577,19 @@ export function Notch() {
     dissolveTimer.current = window.setTimeout(() => close(), 450);
   }, [close]);
 
+  /** Start/Restart only collapse when the compact timer bar is enabled. */
+  const handleTimerStarted = useCallback(() => {
+    const current = settingsRef.current;
+    if (current.compactBar && current.compactTimer) collapseIntoBar();
+  }, [collapseIntoBar]);
+
+  // Pausing, resetting or finishing cancels a pending start-collapse.
+  useEffect(() => {
+    if (timer.state === "running") return;
+    window.clearTimeout(dissolveTimer.current);
+    dissolveTimer.current = undefined;
+  }, [timer.state]);
+
   // Rust is the source of truth: double-Alt, Esc and outside clicks arrive as
   // close-request. The frontend obeys and clears the pin (close does both).
   useEffect(() => {
@@ -624,24 +638,6 @@ export function Notch() {
     }, 100);
     return () => window.clearInterval(id);
   }, [realTrack, scrubbing]);
-
-  useEffect(() => {
-    if (!timerRunning) return;
-    const id = window.setInterval(() => {
-      setTimerRemaining((current) => {
-        if (current <= 1) {
-          setTimerRunning(false);
-          setTimerActive(false);
-          setTimerComplete(true);
-          window.clearTimeout(completionTimer.current);
-          completionTimer.current = window.setTimeout(() => setTimerComplete(false), 5000);
-          return 0;
-        }
-        return current - 1;
-      });
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, [timerRunning]);
 
   useEffect(() => {
     if (!recording) return;
@@ -859,18 +855,6 @@ export function Notch() {
     void mediaService.seek(Math.round(value * 1000));
   };
 
-  const setPreset = (minutes: number) => {
-    const seconds = minutes * 60;
-    setTimerTotal(seconds);
-    setTimerRemaining(seconds);
-    setTimerRunning(false);
-    setTimerActive(false);
-    setTimerComplete(false);
-    window.clearTimeout(completionTimer.current);
-    window.clearTimeout(dissolveTimer.current);
-    dissolveTimer.current = undefined;
-  };
-
   const openNewNote = () => {
     setTab("notes");
     setNewNoteRequest((request) => request + 1);
@@ -945,33 +929,7 @@ export function Notch() {
 
   const content: Record<TabId, React.ReactNode> = {
     home,
-    timer: (
-      <TimerView
-        total={timerTotal}
-        remaining={timerRemaining}
-        running={timerRunning}
-        complete={timerComplete}
-        onPreset={setPreset}
-        onAddTime={(seconds) => {
-          setTimerRemaining((remaining) => remaining + seconds);
-          setTimerTotal((total) => total + seconds);
-        }}
-        onToggle={() => {
-          const starting = !timerRunning;
-          if (timerRemaining === 0) setTimerRemaining(timerTotal);
-          setTimerRunning(starting);
-          if (starting) {
-            setTimerActive(true);
-            setTimerComplete(false);
-            window.clearTimeout(completionTimer.current);
-            if (settings.compactBar && settings.compactTimer) collapseIntoBar();
-          } else {
-            window.clearTimeout(dissolveTimer.current);
-            dissolveTimer.current = undefined;
-          }
-        }}
-      />
-    ),
+    timer: <TimerView timer={timer} onStarted={handleTimerStarted} />,
     calendar: (
       <CalendarView
         accounts={visibleAccounts}

@@ -68,7 +68,7 @@ export function SettingsView({
     label: string;
   }[] = [
     { key: "compactMusic", label: "Music" },
-    { key: "compactTimer", label: "Timer" },
+    { key: "compactTimer", label: "Timer countdown" },
     { key: "compactRecording", label: "Recording" },
     { key: "compactCharging", label: "Charging" },
   ];
@@ -132,6 +132,9 @@ export function SettingsView({
 
         <p className="mb-1.5 mt-3 text-[11px] font-semibold uppercase tracking-[.08em] text-white/40">
           Compact bar
+        </p>
+        <p className="mb-1.5 text-[11px] text-white/50">
+          Turn a row off to keep it out of the bar.
         </p>
         <div className="overflow-hidden rounded-[14px] border border-[#1f1f1f] bg-[#121212]">
           <div className="flex h-8 items-center justify-between border-b border-white/[0.06] px-2.5">

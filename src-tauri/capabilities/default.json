@@ -8,6 +8,7 @@
   "permissions": [
     "core:default",
     "log:default",
+    "notification:default",
     "core:path:default",
     "core:window:allow-set-focus",
     "core:window:allow-set-ignore-cursor-events",

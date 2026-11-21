@@ -26,6 +26,8 @@ log = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
 tauri = { version = "2.12.6", features = ["tray-icon"] }
 tauri-plugin-log = "2"
+# Phase 4A: native Windows toast when the timer finishes (the notch is hidden).
+tauri-plugin-notification = "2"
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_System_Threading",
@@ -43,4 +45,6 @@ windows = { version = "0.62", features = [
   "Win32_System_WinRT",
   # Phase 3D-4: GetSystemPowerStatus for AC/battery compact activity.
   "Win32_System_Power",
+  # Phase 4A: MessageBeep for the timer-done alert.
+  "Win32_System_Diagnostics_Debug",
 ] }

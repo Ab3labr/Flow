@@ -6,6 +6,7 @@ import {
   type Note,
   type NotchSettings,
   type PowerState,
+  type TimerSnapshot,
   type Track,
 } from "./types";
 
@@ -166,23 +167,211 @@ export const calendarService = {
   },
 };
 
-export const timerService = {
-  getPresets: () => [5, 10, 25],
-  getCustomTimes: () => {
-    try {
-      return JSON.parse(localStorage.getItem("notch-custom-times") || "[]") as number[];
-    } catch {
-      return [];
+const TIMER_PRESETS = [5, 10, 25];
+const TIMER_MIN_MS = 1_000;
+const TIMER_MAX_MS = 86_399_000;
+const TIMER_DURATION_KEY = "notch-timer-duration";
+const TIMER_LAST_CUSTOM_KEY = "notch-timer-last-custom";
+
+type MockTimerState =
+  | { kind: "idle"; durationMs: number }
+  | { kind: "running"; endsAtMs: number; totalMs: number }
+  | { kind: "paused"; remainingMs: number; totalMs: number }
+  | { kind: "done"; totalMs: number };
+
+function clampDuration(ms: number): number {
+  return Math.min(TIMER_MAX_MS, Math.max(TIMER_MIN_MS, Math.round(ms)));
+}
+
+function offsetDuration(value: number, deltaMs: number): number {
+  return Math.max(0, value + deltaMs);
+}
+
+function readStoredDuration(): number {
+  try {
+    const stored = Number(localStorage.getItem(TIMER_DURATION_KEY));
+    return Number.isFinite(stored) && stored > 0 ? clampDuration(stored) : 25 * 60_000;
+  } catch {
+    return 25 * 60_000;
+  }
+}
+
+function readStoredLastCustom(): number | null {
+  try {
+    const stored = Number(localStorage.getItem(TIMER_LAST_CUSTOM_KEY));
+    return Number.isFinite(stored) && stored > 0 ? clampDuration(stored) : null;
+  } catch {
+    return null;
+  }
+}
+
+function mockTotalMs(state: MockTimerState): number {
+  return state.kind === "idle" ? state.durationMs : state.totalMs;
+}
+
+function mockRemainingMs(state: MockTimerState, now: number): number {
+  switch (state.kind) {
+    case "idle":
+      return state.durationMs;
+    case "running":
+      return Math.min(state.totalMs, Math.max(0, state.endsAtMs - now));
+    case "paused":
+      return state.remainingMs;
+    case "done":
+      return 0;
+  }
+}
+
+let mockTimerState: MockTimerState = { kind: "idle", durationMs: readStoredDuration() };
+let mockLastCustomMs: number | null = readStoredLastCustom();
+let mockTimerTicker: number | undefined;
+const mockTimerListeners = new Set<(snapshot: TimerSnapshot) => void>();
+
+function mockTimerSnapshot(now = Date.now()): TimerSnapshot {
+  const state = mockTimerState;
+  const totalMs = mockTotalMs(state);
+  const snapshot: TimerSnapshot = {
+    state: state.kind,
+    durationMs: state.kind === "idle" ? state.durationMs : totalMs,
+    totalMs,
+    remainingMs: mockRemainingMs(state, now),
+    capturedAtMs: now,
+    lastCustomMs: mockLastCustomMs,
+  };
+  if (state.kind === "running") snapshot.endsAtMs = state.endsAtMs;
+  return snapshot;
+}
+
+function publishMockTimer(): void {
+  const snapshot = mockTimerSnapshot();
+  for (const listener of mockTimerListeners) listener(snapshot);
+}
+
+function stopMockTicker(): void {
+  if (mockTimerTicker !== undefined) window.clearInterval(mockTimerTicker);
+  mockTimerTicker = undefined;
+}
+
+/** Mock stand-in for the Rust 250 ms tick thread: flips once at zero. */
+function ensureMockTicker(): void {
+  if (mockTimerState.kind !== "running") {
+    stopMockTicker();
+    return;
+  }
+  if (mockTimerTicker !== undefined) return;
+  mockTimerTicker = window.setInterval(() => {
+    const state = mockTimerState;
+    if (state.kind === "running" && Date.now() >= state.endsAtMs) {
+      mockTimerState = { kind: "done", totalMs: state.totalMs };
+      stopMockTicker();
+      publishMockTimer();
     }
+  }, 250);
+}
+
+function rememberMockCustom(totalMs: number): void {
+  if (TIMER_PRESETS.includes(totalMs / 60_000)) return;
+  mockLastCustomMs = totalMs;
+  try {
+    localStorage.setItem(TIMER_LAST_CUSTOM_KEY, String(totalMs));
+  } catch {
+    // Mock only; storage may be unavailable in private windows.
+  }
+}
+
+export const timerService = {
+  getPresets: (): number[] => TIMER_PRESETS,
+  get: async (): Promise<TimerSnapshot> => mockTimerSnapshot(),
+  subscribe: async (handler: (snapshot: TimerSnapshot) => void): Promise<() => void> => {
+    mockTimerListeners.add(handler);
+    handler(mockTimerSnapshot());
+    return () => {
+      mockTimerListeners.delete(handler);
+    };
   },
-  rememberCustomTime: (minutes: number) => {
-    const recent = timerService
-      .getCustomTimes()
-      .filter((value) => value !== minutes)
-      .slice(0, 2);
-    const next = [minutes, ...recent];
-    localStorage.setItem("notch-custom-times", JSON.stringify(next));
-    return next;
+  set: async (durationMs: number): Promise<TimerSnapshot> => {
+    const clamped = clampDuration(durationMs);
+    if (mockTimerState.kind === "idle") mockTimerState = { kind: "idle", durationMs: clamped };
+    try {
+      localStorage.setItem(TIMER_DURATION_KEY, String(clamped));
+    } catch {
+      // Ignore storage failures in the prototype.
+    }
+    publishMockTimer();
+    return mockTimerSnapshot();
+  },
+  start: async (): Promise<TimerSnapshot> => {
+    if (mockTimerState.kind === "idle") {
+      const totalMs = mockTimerState.durationMs;
+      mockTimerState = { kind: "running", endsAtMs: Date.now() + totalMs, totalMs };
+      rememberMockCustom(totalMs);
+      ensureMockTicker();
+      publishMockTimer();
+    }
+    return mockTimerSnapshot();
+  },
+  pause: async (): Promise<TimerSnapshot> => {
+    if (mockTimerState.kind === "running") {
+      const { endsAtMs, totalMs } = mockTimerState;
+      mockTimerState = {
+        kind: "paused",
+        remainingMs: Math.min(totalMs, Math.max(0, endsAtMs - Date.now())),
+        totalMs,
+      };
+      stopMockTicker();
+      publishMockTimer();
+    }
+    return mockTimerSnapshot();
+  },
+  resume: async (): Promise<TimerSnapshot> => {
+    if (mockTimerState.kind === "paused") {
+      const { remainingMs, totalMs } = mockTimerState;
+      mockTimerState = { kind: "running", endsAtMs: Date.now() + remainingMs, totalMs };
+      ensureMockTicker();
+      publishMockTimer();
+    }
+    return mockTimerSnapshot();
+  },
+  reset: async (): Promise<TimerSnapshot> => {
+    mockTimerState = { kind: "idle", durationMs: clampDuration(mockTotalMs(mockTimerState)) };
+    stopMockTicker();
+    publishMockTimer();
+    return mockTimerSnapshot();
+  },
+  adjust: async (deltaMs: number): Promise<TimerSnapshot> => {
+    const now = Date.now();
+    const state = mockTimerState;
+    if (state.kind === "idle") {
+      mockTimerState = { kind: "idle", durationMs: clampDuration(offsetDuration(state.durationMs, deltaMs)) };
+      try {
+        localStorage.setItem(TIMER_DURATION_KEY, String(mockTimerState.durationMs));
+      } catch {
+        // Ignore storage failures in the prototype.
+      }
+    } else if (state.kind === "running") {
+      mockTimerState = {
+        kind: "running",
+        endsAtMs: Math.max(now, state.endsAtMs + deltaMs),
+        totalMs: clampDuration(offsetDuration(state.totalMs, deltaMs)),
+      };
+    } else if (state.kind === "paused") {
+      mockTimerState = {
+        kind: "paused",
+        remainingMs: clampDuration(offsetDuration(state.remainingMs, deltaMs)),
+        totalMs: clampDuration(offsetDuration(state.totalMs, deltaMs)),
+      };
+    }
+    publishMockTimer();
+    return mockTimerSnapshot();
+  },
+  restart: async (): Promise<TimerSnapshot> => {
+    if (mockTimerState.kind === "done") {
+      const totalMs = mockTimerState.totalMs;
+      mockTimerState = { kind: "running", endsAtMs: Date.now() + totalMs, totalMs };
+      ensureMockTicker();
+      publishMockTimer();
+    }
+    return mockTimerSnapshot();
   },
 };
 

@@ -4,6 +4,7 @@ use tauri::Manager;
 
 mod music;
 mod power;
+mod timer;
 mod triggers;
 mod window_mode;
 
@@ -20,8 +21,17 @@ pub fn run() {
       music::media_seek,
       window_mode::set_ui_mode,
       window_mode::ui_ready,
+      timer::timer_get,
+      timer::timer_set,
+      timer::timer_start,
+      timer::timer_pause,
+      timer::timer_resume,
+      timer::timer_reset,
+      timer::timer_adjust,
+      timer::timer_restart,
       fullscreen_active
     ])
+    .plugin(tauri_plugin_notification::init())
     .setup(|app| {
       #[cfg(target_os = "windows")]
       {
@@ -121,6 +131,16 @@ pub fn run() {
       settings::ensure_settings_file(app.handle());
       settings::init(app.handle());
 
+      // Phase 4A: Rust-authoritative timer. Only the configured duration and
+      // the sound toggle persist; a running timer does not survive restart.
+      let timer_settings = settings::load_or_default(app.handle());
+      timer::start(
+        app.handle().clone(),
+        timer_settings.timer_duration_ms,
+        timer_settings.timer_sound,
+        timer_settings.timer_last_custom_ms,
+      );
+
       // SMTC snapshot: one MTA thread, cached for `media_snapshot`, emitted as
       // `media-state` only when the track/status changes.
       app.manage(std::sync::Arc::new(music::MediaState::default()));
@@ -215,7 +235,11 @@ mod settings {
     }
   }
 
-  #[derive(Debug, Serialize, Deserialize, Default)]
+  fn default_timer_duration_ms() -> u64 {
+    25 * 60_000
+  }
+
+  #[derive(Debug, Serialize, Deserialize)]
   #[serde(rename_all = "camelCase")]
   pub struct AppSettings {
     /// 0 when the field is missing from an older file, which triggers the
@@ -230,6 +254,29 @@ mod settings {
     pub calendar_accounts: Vec<CalendarAccountMeta>,
     #[serde(default)]
     pub timer_custom_times: Vec<u32>,
+    #[serde(default = "default_timer_duration_ms")]
+    pub timer_duration_ms: u64,
+    #[serde(default)]
+    pub timer_last_custom_ms: Option<u64>,
+    #[serde(default = "default_true")]
+    pub timer_sound: bool,
+  }
+
+  /// Must agree with the serde defaults above (a corrupt/missing file lands
+  /// here too, so `Default` cannot derive booleans as false).
+  impl Default for AppSettings {
+    fn default() -> Self {
+      Self {
+        settings_version: 0,
+        notch: NotchSettings::default(),
+        notes_folder: None,
+        calendar_accounts: Vec::new(),
+        timer_custom_times: Vec::new(),
+        timer_duration_ms: default_timer_duration_ms(),
+        timer_last_custom_ms: None,
+        timer_sound: true,
+      }
+    }
   }
 
   /// Live settings read by the trigger threads every cycle. `settings_set`
@@ -307,7 +354,10 @@ mod settings {
     },
     "notesFolder": null,
     "calendarAccounts": [],
-    "timerCustomTimes": []
+    "timerCustomTimes": [],
+    "timerDurationMs": 1500000,
+    "timerLastCustomMs": null,
+    "timerSound": true
   }"#;
 
   pub fn ensure_settings_file(handle: &tauri::AppHandle) {
@@ -496,6 +546,9 @@ mod settings {
       assert!(settings.notes_folder.is_none());
       assert!(settings.calendar_accounts.is_empty());
       assert!(settings.timer_custom_times.is_empty());
+      assert_eq!(settings.timer_duration_ms, 25 * 60_000);
+      assert!(settings.timer_last_custom_ms.is_none());
+      assert!(settings.timer_sound);
     }
 
     #[test]
@@ -515,6 +568,9 @@ mod settings {
       assert!(notch.compact_recording);
       assert!(notch.compact_charging);
       assert_eq!(notch.shortcut, "Alt Alt");
+      assert_eq!(settings.timer_duration_ms, 25 * 60_000);
+      assert!(settings.timer_last_custom_ms.is_none());
+      assert!(settings.timer_sound);
     }
   }
 }
@@ -545,6 +601,7 @@ async fn settings_set(
   settings.settings_version = settings::SETTINGS_VERSION;
   settings::save_settings(&handle, &settings)?;
   settings::set_live(&settings.notch);
+  timer::apply_sound_setting(&handle, settings.timer_sound);
   settings::log_values(&settings.notch);
   Ok(())
 }

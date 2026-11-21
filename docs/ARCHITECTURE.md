@@ -50,8 +50,14 @@ synchronous functions returning mock data.
 - `calendarService`: `getDefaultAccounts`, `getProviders`,
   `createAccount`, `getToday(accounts)` (filters by visible+synced,
   formats `detail`/`time` strings, sorts), `getMeetingProvider(event)`.
-- `timerService`: `getPresets` [5,10,25], `getCustomTimes` /
-  `rememberCustomTime` (localStorage `notch-custom-times`, max 3 MRU).
+- `timerService` (real in `tauriServices.ts`, mock in browser):
+  `getPresets` [5,10,25], `get`/`subscribe` (full `TimerSnapshot`),
+  `set`, `start`, `pause`, `resume`, `reset`, `adjust`, `restart`. Snapshot
+  `{state,durationMs,totalMs,remainingMs,capturedAtMs,endsAtMs?,
+  lastCustomMs}`; commands return it and Rust also emits `timer-state`.
+  `src/live/useTimer.ts` subscribes and counts `remainingMs` down locally every
+  250 ms from `endsAtMs`. Mock keeps the same wall-clock machine with
+  localStorage duration/last-custom keys.
 - `captureService.getModes()` → ["Snip","Record"] labels.
 - `noteService`: `list/get/create/save/remove` over localStorage
   `notch-notes`.
@@ -72,7 +78,7 @@ src/services/
                     Note, NotchSettings)
   index.ts          exports mock or tauri impl by VITE_USE_MOCK
   mockServices.ts   mock data + localStorage impl
-  tauriServices.ts  invoke()/listen() wrappers — settings + now playing
+  tauriServices.ts  invoke()/listen() wrappers — settings, media, power, timer
 ```
 `settingsService` is real (NotchSettings + notesFolder + calendar account
 metadata via `settings_get`/`settings_set`; unrelated fields preserved).
@@ -236,13 +242,20 @@ emission (and sets `window.FLOAT_DEBUG` so the webview logs its own stages).
 `%APPDATA%\Float\settings.json` via `app.path().app_config_dir()`:
 `NotchSettings` fields, `notesFolder`, `calendarAccounts` metadata
 (id/provider/email/name/color/visible/status — never tokens),
-`timerCustomTimes`, OAuth account list. Atomic write (temp+rename).
+`timerCustomTimes`, `timerDurationMs`, `timerLastCustomMs`, `timerSound`,
+OAuth account list. Atomic write (temp+rename).
 
 ### Services → Rust commands (planned)
 - media: `media_snapshot`, `media_toggle/next/prev/seek` (done);
   event `media-state` (done). System volume still Phase 3B+/8.
-- timer: `timer_set/pause/resume/add/get`; event `timer-state`;
-  expiry → toast + `timer-done`.
+- timer (Phase 4A, done): `timer_get`, `timer_set`, `timer_start`,
+  `timer_pause`, `timer_resume`, `timer_reset`, `timer_adjust`,
+  `timer_restart`; each returns and emits `timer-state {state, durationMs,
+  totalMs, remainingMs, capturedAtMs, endsAtMs?}`. A 250 ms thread ticks the
+  wall-clock state machine; completion emits `timer-done {totalMs}`, plays
+  three MessageBeeps and shows a native toast. Settings gain
+  `timerDurationMs` / `timerLastCustomMs` / `timerSound`; a running timer is
+  not saved across restarts. UI wiring is Phase 4B.
 - notes: `notes_list/get/create/save/remove/open_folder`; event
   `notes-changed`.
 - calendar: `calendar_accounts`, `calendar_connect(provider)`,
