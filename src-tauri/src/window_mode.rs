@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
 
 /// Extra height below the panel (shadow bleed).
@@ -69,11 +69,35 @@ struct ModePhase {
   phase: UiPhase,
 }
 
+/// A queued trigger plus when it fired. Startup hover/double-Alt must not be
+/// replayed long after the user's gesture, so entries expire at `ui_ready`.
+struct QueuedTrigger {
+  payload: serde_json::Value,
+  queued_at: Instant,
+}
+
 /// At most one pending payload per trigger kind, delivered after `ui_ready`.
 #[derive(Default)]
 struct TriggerQueue {
-  open: Option<serde_json::Value>,
-  close: Option<serde_json::Value>,
+  open: Option<QueuedTrigger>,
+  close: Option<QueuedTrigger>,
+}
+
+/// Longest a queued startup trigger stays relevant (ms).
+pub const TRIGGER_MAX_AGE_MS: u64 = 1500;
+
+/// Age of a queued trigger; `None` if the clock moved backwards.
+fn trigger_age_ms(queued_at: Instant, now: Instant) -> Option<u64> {
+  now.checked_duration_since(queued_at)
+    .map(|age| age.as_millis() as u64)
+}
+
+/// Deliver only triggers younger than `TRIGGER_MAX_AGE_MS`.
+fn is_fresh_trigger(queued_at: Instant, now: Instant) -> bool {
+  matches!(
+    trigger_age_ms(queued_at, now),
+    Some(age) if age < TRIGGER_MAX_AGE_MS
+  )
 }
 
 /// Rust-owned panel state. Managed with `app.manage(...)`; the trigger hooks
@@ -170,22 +194,26 @@ impl AppState {
   }
 
   fn queue(&self, kind: TriggerKind, payload: serde_json::Value) {
+    let entry = QueuedTrigger {
+      payload,
+      queued_at: Instant::now(),
+    };
     let mut queue = self.lock_queue();
     match kind {
-      TriggerKind::Open => queue.open = Some(payload),
-      TriggerKind::Close => queue.close = Some(payload),
+      TriggerKind::Open => queue.open = Some(entry),
+      TriggerKind::Close => queue.close = Some(entry),
     }
   }
 
   /// Drains queued triggers, open before close. Used once by `ui_ready`.
-  fn take_queued(&self) -> Vec<(TriggerKind, serde_json::Value)> {
+  fn take_queued(&self) -> Vec<(TriggerKind, QueuedTrigger)> {
     let mut queue = self.lock_queue();
     let mut out = Vec::new();
-    if let Some(payload) = queue.open.take() {
-      out.push((TriggerKind::Open, payload));
+    if let Some(entry) = queue.open.take() {
+      out.push((TriggerKind::Open, entry));
     }
-    if let Some(payload) = queue.close.take() {
-      out.push((TriggerKind::Close, payload));
+    if let Some(entry) = queue.close.take() {
+      out.push((TriggerKind::Close, entry));
     }
     out
   }
@@ -627,8 +655,21 @@ pub fn ui_ready(
       queued.len()
     );
   }
-  for (kind, payload) in queued {
-    emit_trigger(&window.app_handle(), kind, payload);
+  for (kind, entry) in queued {
+    let now = Instant::now();
+    if is_fresh_trigger(entry.queued_at, now) {
+      emit_trigger(&window.app_handle(), kind, entry.payload);
+    } else {
+      match trigger_age_ms(entry.queued_at, now) {
+        Some(age) => log::info!("dropped stale trigger (age {age} ms)"),
+        None => log::info!("dropped stale trigger (age unknown)"),
+      }
+    }
+  }
+  if let Some(tray) = window.app_handle().tray_by_id("main") {
+    if let Err(err) = tray.set_tooltip(Some("Float")) {
+      log::warn!("failed to update tray tooltip: {err}");
+    }
   }
   Ok(debug)
 }
@@ -812,9 +853,9 @@ mod tests {
     let queued = state.take_queued();
     assert_eq!(queued.len(), 2);
     assert_eq!(queued[0].0, TriggerKind::Open);
-    assert_eq!(queued[0].1["source"], "alt");
+    assert_eq!(queued[0].1.payload["source"], "alt");
     assert_eq!(queued[1].0, TriggerKind::Close);
-    assert_eq!(queued[1].1["source"], "esc");
+    assert_eq!(queued[1].1.payload["source"], "esc");
     // Draining clears the queue so ui_ready delivers each kind once.
     assert!(state.take_queued().is_empty());
   }
@@ -831,5 +872,35 @@ mod tests {
   fn trigger_event_names_match_the_frontend_contract() {
     assert_eq!(TriggerKind::Open.event(), "open-request");
     assert_eq!(TriggerKind::Close.event(), "close-request");
+  }
+
+  #[test]
+  fn queued_triggers_expire_after_1500_ms() {
+    let queued_at = Instant::now();
+    // Fresh enough: same tick, and just inside the limit.
+    assert!(is_fresh_trigger(queued_at, queued_at));
+    assert!(is_fresh_trigger(
+      queued_at,
+      queued_at + Duration::from_millis(TRIGGER_MAX_AGE_MS - 1)
+    ));
+    // At/over the limit (and clock skew) are dropped at ui_ready.
+    assert!(!is_fresh_trigger(
+      queued_at,
+      queued_at + Duration::from_millis(TRIGGER_MAX_AGE_MS)
+    ));
+    assert!(!is_fresh_trigger(
+      queued_at,
+      queued_at + Duration::from_millis(TRIGGER_MAX_AGE_MS * 2)
+    ));
+    assert!(!is_fresh_trigger(
+      queued_at + Duration::from_secs(1),
+      queued_at
+    ));
+
+    assert_eq!(
+      trigger_age_ms(queued_at, queued_at + Duration::from_millis(750)),
+      Some(750)
+    );
+    assert_eq!(trigger_age_ms(queued_at + Duration::from_secs(1), queued_at), None);
   }
 }

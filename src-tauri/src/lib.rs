@@ -92,6 +92,8 @@ pub fn run() {
       let menu = Menu::with_items(handle, &[&open_item, &settings_item, &quit_item])?;
 
       let mut tray = TrayIconBuilder::with_id("main")
+        // Updated to "Float" by the ui_ready handshake (window_mode::ui_ready).
+        .tooltip("Float (starting...)")
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id().as_ref() {

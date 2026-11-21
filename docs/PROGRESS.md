@@ -210,9 +210,14 @@ Fixes:
 - Startup handshake: the frontend registers every Tauri listener through
   `services/listenerRegistry.ts`; once all are settled it calls the new
   `ui_ready` command. Rust applies Idle/Stable/logical_open=false, resets the
-  Alt tracker, marks itself ready, then delivers queued triggers (at most one
-  per kind, newest wins). All trigger emission (hover, double-Alt, Esc,
-  outside click, tray) goes through `window_mode::emit_trigger`.
+  Alt tracker, marks itself ready (the tray tooltip reads "Float (starting...)"
+  until this point, then "Float"), then delivers queued triggers (at most one
+  per kind, newest wins). Each queued entry carries its `Instant`; `ui_ready`
+  drops anything older than 1500 ms ("dropped stale trigger (age X ms)") so a
+  startup hover is not replayed long after the gesture. Hover and double-Alt
+  stay invisible while not ready. All
+  trigger emission (hover, double-Alt, Esc, outside click, tray) goes through
+  `window_mode::emit_trigger`.
 - First plan after `ui_ready` is force-sent with the planKey dedupe bypassed.
 - 400 ms open watchdog (`PLAN_SEQ` generation token): if no `set_ui_mode`
   arrives after an emitted `open-request`, Rust logs a warning, applies the
