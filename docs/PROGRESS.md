@@ -138,9 +138,24 @@ not started / in progress / done / blocked
       raises transient, `compactTimer` off removes activity.
 
 ### Phase 5 — Notes (markdown files)
-- [ ] `%USERPROFILE%\Documents\Float Notes\*.md`, slug+timestamp names
-- [ ] Debounced autosave + atomic write; recent-5 list; Recycle Bin delete
-- [ ] Folder watcher → `notes-changed`; Open folder button
+- [x] Pure functions: `parse_note`, `serialize_note`, `slugify`, `file_name`
+  - CRLF→LF, BOM strip, title extraction, body with one leading blank line removed
+  - Forbidden char removal, whitespace collapse, dot trimming, 50-char cap, empty→"Untitled"
+  - `file_name(datetime, slug)` → "YYYY-MM-DD HH-mm-ss {slug}.md"; collision helper
+- [x] File I/O operations: `notes_dir`, `notes_list`, `notes_get`, `notes_save`, `notes_delete`, `notes_open_folder`
+  - notes_dir uses settings.notesFolder or Tauri `documents_dir()` + "Float Notes"; create if missing
+  - notes_list: sort by mtime newest first, return {id, title, modifiedMs} reading only first 512 bytes
+  - notes_get: reject >2 MB files
+  - notes_save: create if null, atomic write (temp + rename), rename if slug changes from "Untitled" to non-empty
+    never create when both title and body empty
+  - notes_delete: trash::delete to Recycle Bin
+  - notes_open_folder: create folder then explorer.exe
+- [x] Folder watcher with notify crate: non-recursive, 150 ms debounce, 500 ms own-write ignore; emit "notes-changed"
+- [x] Flush on quit: tray "Quit" emits "flush-request" waits up to 800 ms for "flush-done" from front end, then exits
+- [x] Tauri commands: notes_list, notes_get, notes_save, notes_delete, notes_open_folder, notes_folder_path
+- [x] `trash` crate dependency added with justification in docs/DECISIONS.md
+- [x] `settingsService` integration for `notesFolder` setting
+- [x] All `cargo test` (112 passing), `cargo check` clean, `pnpm build` succeeds
 
 ### Phase 6 — Calendar
 - [ ] Local calendar CRUD (`calendar.json` or SQLite)
@@ -166,6 +181,115 @@ not started / in progress / done / blocked
       build + installer artifact)
 - [ ] docs/TEST_CHECKLIST.md manual matrix
 - [ ] docs/DECISIONS.md dep justifications (keep updated every phase)
+- [x] Privacy rules written into AGENTS.md (PRIVACY), docs/DECISIONS.md and
+      docs/PRIVACY.md; code audited against them (2026-11-22)
+
+## Privacy audit (2026-11-22)
+- [x] `docs/PRIVACY.md`: principles, data inventory (settings.json, notes,
+      logs, webview/localStorage, planned calendar cache + Credential Manager),
+      network inventory with every `reqwest`/`fetch(`/`XMLHttpRequest`/
+      `WebSocket`/`http(s)://`/plugin/remote font+image finding.
+- [x] `src-tauri/tauri.conf.json`: production CSP allows only local assets,
+      `data:` images, inline styles and Tauri IPC; `devCsp` adds only the local
+      Vite server (`ws://localhost:8443`). No remote fonts/images/scripts/
+      frames/objects/workers. `appDirectoriesOverride.log` pins logs to
+      `%APPDATA%\Float\logs`.
+- [x] `src-tauri/src/lib.rs`: log plugin off unless `FLOAT_DEBUG=1`, file
+      target only, 1 MB cap with `KeepOne` rotation, no note bodies logged.
+- [x] Violations listed, not removed (owner rule for this session): remote
+      Unsplash wallpaper in `src/App.tsx:78`; dormant Google Analytics
+      injection in `vite.config.ts:184-205`. Both are blocked by CSP in the
+      Tauri webview; proposed removals recorded in docs/PRIVACY.md and
+      docs/DECISIONS.md.
+- [x] Verification run: `pnpm build` ✓, `cargo test` ✓ (112 passed),
+      `pnpm tauri dev` ✓ (Vite ready on :8443, Rust compiled,
+      `target\debug\float.exe` launched).
+- [x] Pre-existing build blocker repaired so the above could be verified:
+      `src/components/NotesView.tsx` was missing the `)}` that closes
+      `{listOpen && (` and had one extra `</div>`; both restored to the `HEAD`
+      structure. No design, copy or animation content changed.
+
+## Notes tab crash + view isolation (2026-11-22)
+- [x] Added `src/components/ErrorBoundary.tsx`: reusable class boundary with a
+      small centered panel-styled fallback ("Something went wrong in {Tab}"),
+      "Try again" (remounts children via a key) and, for Notes, "Open notes
+      folder". Logs only the error message + React component stack at error
+      level via `logWebview` → `float.log`; no note text or file contents.
+      On catch it restores the 172 px minimum panel height.
+- [x] Wrapped **all six** tab views in `Notch.tsx:930-1000` (`home`, `timer`,
+      `calendar`, `notes`, `capture`, `settings`) so one broken view cannot
+      take down the notch. Notes passes `onHeightChange` and
+      `showOpenNotesFolder`.
+- [x] Root cause found (not guessed) in `NotesView.tsx` + service wiring:
+  - mount effect called `noteService.list().then(...)`; the mock service's
+    `list()` is **synchronous**, so `.then` is undefined → immediate crash.
+  - render read `listed.length` on the **Promise** returned by the Tauri
+    service; later `setRecent(noteService.list())` stored a Promise, so
+    `recent.slice(...)` threw on render.
+  - service method names differ (`create`/`remove` vs `delete`), `subscribe`
+    exists on neither, `save()` returns only `{id, modifiedMs}` and was
+    written straight into editor state, `updatedAt` vs `modifiedMs` made
+    `timeAgo()` return "NaNd ago", and the two duplicate new-note effects
+    created two drafts per request.
+- [x] Fixes: normalize every note through `safeNote`/`safeNoteList` (defaults
+      for missing/null fields), `loadNotes()` always resolves to `Note[]` and
+      swallows load failures, create/remove/subscribe are feature-detected,
+      saves update only the id instead of replacing the note, invalid
+      timestamps fall back to `Date.now()`, the duplicate new-note effect was
+      collapsed to one, and timers/listeners are cleaned up on unmount.
+      JSX/design unchanged.
+- [x] Rust: error-level logs are now always enabled (debug/info still require
+      `FLOAT_DEBUG=1`) so the boundary's crash line reaches `float.log`.
+      Privacy docs updated to match.
+- [x] Mount tests in `src/components/NotesView.test.ts` (jsdom + Vite SSR
+      loader): no notes, sync throw + rejected promise, note with missing
+      fields, plus an ErrorBoundary fallback test. `pnpm test` ✓ 34 passing;
+      `pnpm exec tsc --noEmit` ✓ 0 errors; `pnpm build` ✓.
+
+## Global shortcuts (Phase 2 follow-up, 2026-11-22)
+- [x] Added `src-tauri/src/hotkeys.rs`: pure `Alt+N` / `Alt+C` / `Alt+Z`
+      parser (modifier required, canonical duplicate keys), `MOD_NOREPEAT`
+      registration, cross-platform status model, defensive duplicate check,
+      and parser/status/duplicate unit tests.
+- [x] Registered with Win32 `RegisterHotKey` on the existing keyboard-hook
+      message thread (`src-tauri/src/triggers.rs`); `WM_HOTKEY` and settings
+      reloads are dispatched in that `GetMessageW` loop. Old ids are always
+      unregistered before new ones are applied. No new crate/capability:
+      justification recorded in `docs/DECISIONS.md`.
+- [x] Added persisted settings `hotkeysEnabled` (default on), `hotkeyNotes`
+      (`Alt+N`), `hotkeyNext` (`Alt+C`) and `hotkeyPrev` (`Alt+Z`) with serde
+      defaults in both `NotchSettings::default()` and `DEFAULT_SETTINGS`;
+      partial/old `settings.json` files keep working. `settings_set` wakes the
+      hotkey thread so changes apply live.
+- [x] `Alt+C` / `Alt+Z` call `MediaState::send_command(Next/Prev)` on the
+      displayed session through `spawn_blocking`; no simulated keys, no
+      relookup, no second session, no action when no session exists.
+- [x] Added gated `TriggerKind::OpenNotes` / `open-notes` to `window_mode.rs`
+      (one fresh payload queued until `ui_ready`; watchdog remains Open-only).
+      Rust ignores it when `hideInFullscreen` is on and a fullscreen app is in
+      front; media shortcuts are unaffected.
+- [x] Rust focuses the window on the notes hotkey: `set_focus()` first, then
+      AttachThreadInput/BringWindowToTop/SetForegroundWindow/SetFocus fallback,
+      logging which method worked. Frontend also makes a best-effort focus
+      call after opening.
+- [x] Frontend `open-notes`: closed → pinned Notes with a new empty note and
+      title focus; open on Notes → flush and close; open on another tab →
+      flush, switch to Notes and create a new note. Tab switches and closes
+      now flush pending note saves through a registered `NotesView` callback.
+- [x] Settings "SHORTCUTS" section: master "Global shortcuts" toggle plus the
+      three rows using the existing capture field. Captures require a modifier,
+      reject duplicates and double-Alt collisions, and registration failures
+      arrive through `hotkeys-status` / `hotkeys_status` (red
+      "In use by another app" text).
+- [x] `Alt+N`, `Alt+C` and `Alt+Z` cannot count toward double-Alt: unit test
+      added to `AltTapTracker`. Frontend shortcut rules covered by
+      `src/services/shortcuts.test.ts`.
+- [x] Docs updated: `docs/DECISIONS.md` (no-new-dependency justification),
+      `docs/PRIVACY.md` (settings keys + local IPC event), `docs/FEATURES.md`
+      and this file.
+- [x] Verification: `cargo test` ✓ 117 passed, `cargo check` ✓ (existing
+      `notes.rs` stub warnings only), `pnpm exec tsc --noEmit` ✓ 0 errors,
+      `pnpm test` ✓ 38 passed, `pnpm build` ✓.
 
 ## How to run
 

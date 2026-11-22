@@ -89,6 +89,10 @@ export type NotchSettings = {
   compactRecording: boolean;
   compactCharging: boolean;
   shortcut: string;
+  hotkeysEnabled: boolean;
+  hotkeyNotes: string;
+  hotkeyNext: string;
+  hotkeyPrev: string;
 };
 
 export const DEFAULT_NOTCH_SETTINGS: NotchSettings = {
@@ -104,4 +108,8 @@ export const DEFAULT_NOTCH_SETTINGS: NotchSettings = {
   compactRecording: true,
   compactCharging: true,
   shortcut: "Alt Alt",
+  hotkeysEnabled: true,
+  hotkeyNotes: "Alt+N",
+  hotkeyNext: "Alt+C",
+  hotkeyPrev: "Alt+Z",
 };

@@ -518,6 +518,7 @@ mod alt_hook {
     let spawned = std::thread::Builder::new()
       .name("float-alt-hook".into())
       .spawn(move || {
+        let message_app = app.clone();
         *lock_state() = Some(HookState {
           tracker: AltTapTracker::new(ALT_TAP_WINDOW_MS),
           app,
@@ -534,6 +535,11 @@ mod alt_hook {
         };
         log::info!("keyboard hook installed (double alt, {ALT_TAP_WINDOW_MS} ms window)");
 
+        // `RegisterHotKey(None, ..)` binds to this thread, which already runs
+        // a message loop for the low-level keyboard hook. WM_HOTKEY and live
+        // settings reloads are handled in that same loop below.
+        crate::hotkeys::start(&message_app);
+
         let mut message = MSG::default();
         loop {
           // SAFETY: blocking wait; the low-level hook runs while we wait here,
@@ -546,8 +552,10 @@ mod alt_hook {
             log::error!("keyboard hook message loop failed");
             break;
           }
+          crate::hotkeys::on_message(&message_app, &message);
         }
 
+        crate::hotkeys::stop();
         // SAFETY: `hook` came from SetWindowsHookExW on this thread.
         let _ = unsafe { UnhookWindowsHookEx(hook) };
         *lock_state() = None;
@@ -812,6 +820,24 @@ mod tests {
     // The dirty tap is discarded, so the next clean tap starts the sequence.
     assert!(!tap(&mut tracker, base, 100));
     assert!(tap(&mut tracker, base, 250));
+  }
+
+  #[test]
+  fn alt_n_c_z_hotkeys_are_not_alt_taps() {
+    for key in ["N", "C", "Z"] {
+      let base = Instant::now();
+      let mut tracker = AltTapTracker::new(WINDOW);
+      let shortcut = crate::hotkeys::parse_shortcut(&format!("Alt+{key}")).unwrap();
+      // The hotkey chord is exactly Alt-down, non-Alt-down, Alt-up.
+      assert!(!tracker.on_event(KeyEvent::AltDown, at(base, 0)));
+      assert_eq!(shortcut.modifiers(), 0x0001);
+      assert!(!tracker.on_event(KeyEvent::OtherDown, at(base, 10)));
+      assert!(!tracker.on_event(KeyEvent::AltUp, at(base, 40)));
+      // A clean tap 100 ms later would double-fire if the chord had counted.
+      assert!(!tap(&mut tracker, base, 100));
+      // Two fresh taps still work, so the bound keys do not break double-Alt.
+      assert!(tap(&mut tracker, base, 250));
+    }
   }
 
   #[test]

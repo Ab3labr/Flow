@@ -48,3 +48,4 @@ windows = { version = "0.62", features = [
   # Phase 4A: MessageBeep for the timer-done alert.
   "Win32_System_Diagnostics_Debug",
 ] }
+trash = "5.4.0"

@@ -249,3 +249,70 @@ export const timerService = {
     timerCommand("timer_adjust", { deltaMs: Math.round(deltaMs) }),
   restart: (): Promise<TimerSnapshot | null> => timerCommand("timer_restart"),
 };
+
+/** Notes service: real mode uses Tauri commands, mock mode uses localStorage. */
+export const notesService = {
+  /** Real mode: list notes from the notes folder. */
+  list: async (): Promise<Array<{ id: string; title: string; modifiedMs: number }>> => {
+    if (import.meta.env.VITE_USE_MOCK) {
+      return mockNoteList();
+    }
+    return invoke<Array<{ id: string; title: string; modifiedMs: number }>>("notes_list")
+      .then((results) => results.sort((a, b) => b.modifiedMs - a.modifiedMs));
+  },
+  /** Real mode: get a note by id. */
+  get: async (id: string): Promise<{ id: string; title: string; body: string; modifiedMs: number }> => {
+    if (import.meta.env.VITE_USE_MOCK) {
+      return mockNoteGet(id);
+    }
+    return invoke<{ id: string; title: string; body: string; modifiedMs: number }>("notes_get", { id })
+      .then((note) => note);
+  },
+  /** Real mode: save a note. */
+  save: async (id: string | null, title: string, body: string): Promise<{ id: string | null; modifiedMs: number }> => {
+    if (import.meta.env.VITE_USE_MOCK) {
+      return mockNoteSave(id, title, body);
+    }
+    return invoke<{ id: string | null; modifiedMs: number }>("notes_save", { id, title, body });
+  },
+  /** Real mode: delete a note. */
+  delete: async (id: string): Promise<void> => {
+    if (import.meta.env.VITE_USE_MOCK) {
+      mockNoteDelete(id);
+      return;
+    }
+    await invoke<void>("notes_delete", { id });
+  },
+  /** Real mode: open the notes folder. */
+  openFolder: async (): Promise<void> => {
+    if (import.meta.env.VITE_USE_MOCK) {
+      // no-op in mock mode
+      return;
+    }
+    await invoke<void>("notes_open_folder");
+  },
+  /** Real mode: get the notes folder path. */
+  folderPath: async (): Promise<string> => {
+    if (import.meta.env.VITE_USE_MOCK) {
+      return "Documents/Float Notes";
+    }
+    return invoke<string>("notes_folder_path");
+  },
+};
+
+/** Mock note operations using localStorage. */
+function mockNoteList(): Array<{ id: string; title: string; modifiedMs: number }> {
+  return [];
+}
+
+function mockNoteGet(id: string): Promise<{ id: string; title: string; body: string; modifiedMs: number }> {
+  return Promise.resolve({ id, title: "", body: "", modifiedMs: 0 });
+}
+
+function mockNoteSave(id: string | null, title: string, body: string): Promise<{ id: string | null; modifiedMs: number }> {
+  return Promise.resolve({ id, modifiedMs: Date.now() });
+}
+
+function mockNoteDelete(id: string): void {
+  // no-op in mock mode
+}

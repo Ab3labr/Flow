@@ -2,9 +2,11 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::Manager;
 
+mod hotkeys;
 mod music;
 mod power;
 mod timer;
+mod notes;
 mod triggers;
 mod window_mode;
 
@@ -29,6 +31,13 @@ pub fn run() {
       timer::timer_reset,
       timer::timer_adjust,
       timer::timer_restart,
+      notes::notes_list,
+      notes::notes_get,
+      notes::notes_save,
+      notes::notes_delete,
+      notes::notes_open_folder,
+      notes::notes_folder_path,
+      hotkeys_status,
       fullscreen_active
     ])
     .plugin(tauri_plugin_notification::init())
@@ -48,18 +57,28 @@ pub fn run() {
         }
       }
 
-      // Files land in the app log dir as float.log. Kept on in release builds:
-      // the Alt hook writes one line per key event for field diagnosis.
+      // Privacy rule (docs/PRIVACY.md): debug/info logging is off unless
+      // FLOAT_DEBUG=1. Error-level lines (view crashes) are always recorded so
+      // a crash can be diagnosed. Everything stays on this PC in float.log
+      // under %APPDATA%\Float\logs (app > appDirectoriesOverride.log), capped
+      // at 1 MB with one-file rotation. No stdout target, no upload, and no
+      // note text or file content in any line.
+      let debug_logging = music::debug_enabled();
       app.handle().plugin(
         tauri_plugin_log::Builder::default()
-          .level(log::LevelFilter::Info)
+          .level(if debug_logging {
+            log::LevelFilter::Info
+          } else {
+            log::LevelFilter::Error
+          })
           .clear_targets()
-          .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout))
           .target(tauri_plugin_log::Target::new(
             tauri_plugin_log::TargetKind::LogDir {
               file_name: Some("float".into()),
             },
           ))
+          .max_file_size(1_000_000)
+          .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
           .build(),
       )?;
 
@@ -149,6 +168,10 @@ pub fn run() {
       // AC/battery changes are emitted as `power-state`; startup is silent.
       power::start(app.handle().clone());
 
+      // Rebindable global hotkeys are registered on the keyboard-hook message
+      // thread below. They call the media/state code paths in Rust directly
+      // (no simulated keys).
+
       #[cfg(target_os = "windows")]
       {
         let handle = app.handle().clone();
@@ -182,6 +205,18 @@ mod settings {
     "Alt Alt".to_string()
   }
 
+  fn default_hotkey_notes() -> String {
+    "Alt+N".to_string()
+  }
+
+  fn default_hotkey_next() -> String {
+    "Alt+C".to_string()
+  }
+
+  fn default_hotkey_prev() -> String {
+    "Alt+Z".to_string()
+  }
+
   /// Shared with the frontend: the same camelCase names, and every
   /// `#[serde(default)]` below keeps a partial settings.json usable. Old keys
   /// from earlier versions ("fullscreen", "launch") are simply ignored.
@@ -212,6 +247,14 @@ mod settings {
     pub compact_charging: bool,
     #[serde(default = "default_shortcut")]
     pub shortcut: String,
+    #[serde(default = "default_true")]
+    pub hotkeys_enabled: bool,
+    #[serde(default = "default_hotkey_notes")]
+    pub hotkey_notes: String,
+    #[serde(default = "default_hotkey_next")]
+    pub hotkey_next: String,
+    #[serde(default = "default_hotkey_prev")]
+    pub hotkey_prev: String,
   }
 
   /// Must agree with the serde defaults above: `#[derive(Default)]` would turn
@@ -231,6 +274,10 @@ mod settings {
         compact_recording: true,
         compact_charging: true,
         shortcut: default_shortcut(),
+        hotkeys_enabled: true,
+        hotkey_notes: default_hotkey_notes(),
+        hotkey_next: default_hotkey_next(),
+        hotkey_prev: default_hotkey_prev(),
       }
     }
   }
@@ -306,6 +353,11 @@ mod settings {
     read_live(|notch| notch.hide_in_fullscreen)
   }
 
+  /// True when the three global hotkeys are enabled.
+  pub fn hotkeys_enabled() -> bool {
+    read_live(|notch| notch.hotkeys_enabled)
+  }
+
   pub fn set_live(notch: &NotchSettings) {
     let mut guard = match LIVE.write() {
       Ok(guard) => guard,
@@ -316,11 +368,12 @@ mod settings {
 
   pub fn log_values(notch: &NotchSettings) {
     log::info!(
-      "settings: topEdge={} altAlt={} hideInFullscreen={} launchAtStartup={}",
+      "settings: topEdge={} altAlt={} hideInFullscreen={} launchAtStartup={} hotkeysEnabled={}",
       notch.top_edge,
       notch.alt_alt,
       notch.hide_in_fullscreen,
-      notch.launch_at_startup
+      notch.launch_at_startup,
+      notch.hotkeys_enabled
     );
   }
 
@@ -350,7 +403,11 @@ mod settings {
       "compactTimer": true,
       "compactRecording": true,
       "compactCharging": true,
-      "shortcut": "Alt Alt"
+      "shortcut": "Alt Alt",
+      "hotkeysEnabled": true,
+      "hotkeyNotes": "Alt+N",
+      "hotkeyNext": "Alt+C",
+      "hotkeyPrev": "Alt+Z"
     },
     "notesFolder": null,
     "calendarAccounts": [],
@@ -453,6 +510,10 @@ mod settings {
       assert!(notch.compact_recording);
       assert!(notch.compact_charging);
       assert_eq!(notch.shortcut, "Alt Alt");
+      assert!(notch.hotkeys_enabled);
+      assert_eq!(notch.hotkey_notes, "Alt+N");
+      assert_eq!(notch.hotkey_next, "Alt+C");
+      assert_eq!(notch.hotkey_prev, "Alt+Z");
     }
 
     #[test]
@@ -469,6 +530,10 @@ mod settings {
       assert!(notch.compact_recording);
       assert!(notch.compact_charging);
       assert_eq!(notch.shortcut, "Ctrl + Shift + Space");
+      assert!(notch.hotkeys_enabled);
+      assert_eq!(notch.hotkey_notes, "Alt+N");
+      assert_eq!(notch.hotkey_next, "Alt+C");
+      assert_eq!(notch.hotkey_prev, "Alt+Z");
     }
 
     #[test]
@@ -494,6 +559,10 @@ mod settings {
       assert!(notch.compact_recording);
       assert!(notch.compact_charging);
       assert_eq!(notch.shortcut, "Alt Alt");
+      assert!(notch.hotkeys_enabled);
+      assert_eq!(notch.hotkey_notes, "Alt+N");
+      assert_eq!(notch.hotkey_next, "Alt+C");
+      assert_eq!(notch.hotkey_prev, "Alt+Z");
     }
 
     #[test]
@@ -568,6 +637,10 @@ mod settings {
       assert!(notch.compact_recording);
       assert!(notch.compact_charging);
       assert_eq!(notch.shortcut, "Alt Alt");
+      assert!(notch.hotkeys_enabled);
+      assert_eq!(notch.hotkey_notes, "Alt+N");
+      assert_eq!(notch.hotkey_next, "Alt+C");
+      assert_eq!(notch.hotkey_prev, "Alt+Z");
       assert_eq!(settings.timer_duration_ms, 25 * 60_000);
       assert!(settings.timer_last_custom_ms.is_none());
       assert!(settings.timer_sound);
@@ -582,6 +655,12 @@ use settings::AppSettings;
 #[tauri::command]
 fn fullscreen_active() -> bool {
   triggers::foreground_fullscreen_active()
+}
+
+/// Last hotkey registration result, also emitted as `hotkeys-status`.
+#[tauri::command]
+fn hotkeys_status() -> hotkeys::HotkeyFailures {
+  hotkeys::status()
 }
 
 #[tauri::command]
@@ -601,6 +680,7 @@ async fn settings_set(
   settings.settings_version = settings::SETTINGS_VERSION;
   settings::save_settings(&handle, &settings)?;
   settings::set_live(&settings.notch);
+  hotkeys::reload(&handle, &settings.notch);
   timer::apply_sound_setting(&handle, settings.timer_sound);
   settings::log_values(&settings.notch);
   Ok(())

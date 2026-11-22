@@ -4,8 +4,71 @@ import { useEffect, useRef, useState } from "react";
 import { Note, noteService } from "../services";
 import { PressButton } from "./TopBar";
 
-function timeAgo(timestamp: number) {
-  const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
+/**
+ * The mock service is synchronous and uses `updatedAt`; the Tauri service is
+ * async and uses `modifiedMs`. Normalise both at the boundary so the view
+ * never renders a Promise or a partially-shaped note.
+ */
+type NoteRow = {
+  id?: unknown;
+  title?: unknown;
+  body?: unknown;
+  updatedAt?: unknown;
+  modifiedMs?: unknown;
+};
+
+function makeId(): string {
+  const c = globalThis.crypto as Crypto | undefined;
+  if (c && typeof c.randomUUID === "function") return c.randomUUID();
+  return `note-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function safeTimestamp(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : Date.now();
+}
+
+function safeNote(value: unknown): Note {
+  const row = (value && typeof value === "object" ? value : {}) as NoteRow;
+  return {
+    id: typeof row.id === "string" && row.id ? row.id : makeId(),
+    title: typeof row.title === "string" ? row.title : "",
+    body: typeof row.body === "string" ? row.body : "",
+    updatedAt: Number.isFinite(row.updatedAt)
+      ? (row.updatedAt as number)
+      : Number.isFinite(row.modifiedMs)
+        ? (row.modifiedMs as number)
+        : Date.now(),
+  };
+}
+
+function safeNoteList(value: unknown): Note[] {
+  return (Array.isArray(value) ? value : []).map(safeNote);
+}
+
+/** Both services return different shapes; always resolve to `Note[]`. */
+function loadNotes(): Promise<Note[]> {
+  try {
+    return Promise.resolve(noteService.list()).then(safeNoteList, () => []);
+  } catch {
+    return Promise.resolve([]);
+  }
+}
+
+/** Create a draft without assuming the mock-only `create` method exists. */
+function createDraft(): Note {
+  const create = (noteService as { create?: () => unknown }).create;
+  if (typeof create === "function") {
+    try {
+      return safeNote(create.call(noteService));
+    } catch {
+      // Fall through to a local-only draft.
+    }
+  }
+  return safeNote({ id: null, title: "", body: "", updatedAt: Date.now() });
+}
+
+function timeAgo(timestamp: unknown) {
+  const minutes = Math.max(0, Math.floor((Date.now() - safeTimestamp(timestamp)) / 60000));
   if (minutes < 1) return "now";
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
@@ -16,82 +79,231 @@ export function NotesView({
   newNoteRequest,
   onHeightChange,
   onRequestHandled,
+  onFlushReady,
 }: {
   newNoteRequest: number;
   onHeightChange: (height: number) => void;
   onRequestHandled: () => void;
+  onFlushReady?: (flush: () => Promise<void>) => void;
 }) {
-  const initial = useRef<Note | null>(null);
-  if (!initial.current) {
-    initial.current = noteService.list()[0] || {
-      id: crypto.randomUUID(),
-      title: "",
-      body: "",
-      updatedAt: Date.now(),
-    };
-  }
-  const [note, setNote] = useState(initial.current);
+  const [note, setNote] = useState<Note>(() => safeNote(null));
   const [cardHeight, setCardHeight] = useState(120);
   const [saved, setSaved] = useState(true);
   const [listOpen, setListOpen] = useState(false);
-  const [recent, setRecent] = useState(noteService.list());
+  const [recent, setRecent] = useState<Note[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const titleRef = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const saveTimer = useRef<number | undefined>(undefined);
+  const saveQueue = useRef<{ title: string; body: string; id: string | null } | null>(null);
+  const mounted = useRef(true);
+  const initialised = useRef(false);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      window.clearTimeout(saveTimer.current);
+    };
+  }, []);
 
   const refreshHeight = () => {
-    window.requestAnimationFrame(() => {
-      if (!bodyRef.current) return;
-      const contentHeight = Math.max(42, bodyRef.current.scrollHeight);
-      const cardHeight = Math.min(288, Math.max(120, contentHeight + 68));
-      setCardHeight(cardHeight);
-      onHeightChange(cardHeight + 52);
-    });
+    if (!bodyRef.current) return;
+    const contentHeight = Math.max(42, bodyRef.current.scrollHeight);
+    const newCardHeight = Math.min(340, Math.max(172, contentHeight + 68));
+    if (newCardHeight !== cardHeight) {
+      setCardHeight(newCardHeight);
+      onHeightChange(newCardHeight + 52);
+    }
   };
 
-  useEffect(refreshHeight, [note.body]);
-
+  // Initial list load. A failed or non-array response simply yields no notes.
   useEffect(() => {
-    if (!newNoteRequest) return;
-    const created = noteService.create();
-    setNote(created);
-    setRecent(noteService.list());
-    setSaved(true);
-    onRequestHandled();
-    window.setTimeout(() => titleRef.current?.focus(), 30);
-  }, [newNoteRequest, onRequestHandled]);
-
-  useEffect(() => {
-    return () => window.clearTimeout(saveTimer.current);
+    void loadNotes().then((rows) => {
+      if (!mounted.current) return;
+      setRecent(rows);
+      if (!initialised.current) {
+        initialised.current = true;
+        if (rows.length > 0) setNote(rows[0]);
+      }
+    });
   }, []);
+
+  // Subscribe only when the active service actually exposes the event.
+  useEffect(() => {
+    const subscribe = (
+      noteService as { subscribe?: (listener: (event: string) => void) => unknown }
+    ).subscribe;
+    if (typeof subscribe !== "function") return;
+    let unsubscribe: unknown;
+    try {
+      unsubscribe = subscribe.call(noteService, (event) => {
+        if (event === "notes-changed") {
+          void loadNotes().then((rows) => {
+            if (mounted.current) setRecent(rows);
+          });
+        }
+      });
+    } catch {
+      return;
+    }
+    return () => {
+      if (typeof unsubscribe === "function") (unsubscribe as () => void)();
+    };
+  }, []);
+
+  // Queue edits that arrive while a save is in flight.
+  useEffect(() => {
+    if (saving) {
+      saveQueue.current = { title: note.title, body: note.body, id: note.id ?? null };
+    }
+  }, [note, saving]);
+
+  const doSave = async () => {
+    if (!note.title.trim() && !note.body.trim()) {
+      setSaved(true);
+      setSaveError(null);
+      return;
+    }
+
+    setSaving(true);
+    setSaveError(null);
+
+    try {
+      const stored = await noteService.save(note.id ?? null, note.title, note.body);
+      const storedId = (stored as { id?: unknown } | null)?.id;
+      if (mounted.current) {
+        // Never replace the editor state with the partial save result.
+        setNote((current) => ({ ...current, id: typeof storedId === "string" ? storedId : current.id }));
+        setSaved(true);
+        setSaveError(null);
+        setSaving(false);
+      }
+      // A stale queued snapshot would disable the debounce on later edits.
+      saveQueue.current = null;
+      void loadNotes().then((rows) => {
+        if (mounted.current) setRecent(rows);
+      });
+    } catch {
+      if (mounted.current) {
+        console.error("Save failed");
+        setSaveError("Couldn't save");
+        setSaving(false);
+      }
+    }
+  };
 
   const update = (changes: Partial<Note>) => {
     const next = { ...note, ...changes };
     setNote(next);
     setSaved(false);
     window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => {
-      const stored = noteService.save(next);
-      setNote(stored);
-      setRecent(noteService.list());
-      setSaved(true);
-    }, 600);
+
+    if (saveQueue.current) {
+      saveQueue.current = { title: next.title, body: next.body, id: next.id ?? null };
+    } else {
+      saveTimer.current = window.setTimeout(() => {
+        doSave();
+      }, 600);
+    }
   };
 
-  const createNote = () => {
-    const created = noteService.create();
-    setNote(created);
-    setRecent(noteService.list());
-    setSaved(true);
+  const handleSave = async () => {
+    window.clearTimeout(saveTimer.current);
+    if (!saved || note.title.trim() || note.body.trim()) {
+      await doSave();
+    }
+  };
+
+  // Let the panel flush a pending draft before it closes or switches tabs.
+  // The ref keeps the registration stable while `handleSave` sees fresh state.
+  const flushRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  flushRef.current = handleSave;
+  useEffect(() => {
+    if (!onFlushReady) return;
+    onFlushReady(() => flushRef.current());
+    return () => onFlushReady(() => Promise.resolve());
+  }, [onFlushReady]);
+
+  // Flush on tab switch, panel close or window blur.
+  useEffect(() => {
+    const flush = () => {
+      window.clearTimeout(saveTimer.current);
+      if (!saved || note.title.trim() || note.body.trim()) {
+        doSave();
+      }
+    };
+    const handleVisibilityChange = () => {
+      if (document.hidden) flush();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("beforeunload", flush);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("beforeunload", flush);
+    };
+  }, [saved, note]);
+
+  // One draft per request: flush the current note first, then create.
+  useEffect(() => {
+    if (!newNoteRequest) return;
+    window.clearTimeout(saveTimer.current);
+
+    const openDraft = () => {
+      if (!mounted.current) return;
+      setNote(createDraft());
+      setSaved(true);
+      onRequestHandled();
+      void loadNotes().then((rows) => {
+        if (mounted.current) setRecent(rows);
+      });
+      window.setTimeout(() => titleRef.current?.focus(), 30);
+    };
+
+    if (!saved || note.title.trim() || note.body.trim()) {
+      void doSave().then(openDraft);
+    } else {
+      openDraft();
+    }
+    // `saved`/`note` are intentionally excluded: this must fire once per request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newNoteRequest]);
+
+  const openRecent = async (item: Note) => {
+    window.clearTimeout(saveTimer.current);
+    if (!saved || note.title.trim() || note.body.trim()) {
+      await doSave();
+    }
+    void loadNotes().then((rows) => {
+      if (mounted.current) setRecent(rows);
+    });
+    setNote(safeNote(item));
     setListOpen(false);
-    window.setTimeout(() => titleRef.current?.focus(), 30);
+    setSaved(true);
+  };
+
+  const deleteRecent = (item: Note) => {
+    const service = noteService as {
+      remove?: (id: string) => unknown;
+      delete?: (id: string) => unknown;
+    };
+    const remove = service.remove ?? service.delete;
+    if (typeof remove === "function") {
+      void Promise.resolve(remove.call(service, item.id)).catch(() => undefined);
+    }
+    void loadNotes().then((rows) => {
+      if (!mounted.current) return;
+      setRecent(rows);
+      if (item.id === note.id) setNote(createDraft());
+    });
   };
 
   return (
     <motion.div
       layout
       transition={{ type: "spring", stiffness: 380, damping: 30, mass: 0.9 }}
-      className="flex min-h-[120px] max-h-[288px] flex-col overflow-hidden rounded-[14px] bg-[#121212]"
+      className="flex min-h-[120px] max-h-[340px] flex-col overflow-hidden rounded-[14px] bg-[#121212]"
       animate={{ height: cardHeight }}
     >
       <div className="flex min-h-0 flex-1 flex-col px-3 pt-2.5">
@@ -112,7 +324,7 @@ export function NotesView({
       </div>
       <div className="flex h-6 shrink-0 items-center justify-between border-t border-white/[0.05] px-3">
         <AnimatePresence>
-          {saved && (
+          {saved && !saving && (
             <motion.span
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -122,10 +334,30 @@ export function NotesView({
               <Check className="h-3 w-3" /> Saved
             </motion.span>
           )}
+          {saving && (
+            <motion.span
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex items-center gap-1 text-[11px] text-white/35"
+            >
+              <Check className="h-3 w-3" /> Saving…
+            </motion.span>
+          )}
+          {saveError && (
+            <motion.span
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex items-center gap-1 text-[11px] text-white/35"
+            >
+              <Check className="h-3 w-3" /> {saveError}
+            </motion.span>
+          )}
         </AnimatePresence>
         <div className="relative ml-auto flex items-center">
           <PressButton
-            onClick={createNote}
+            onClick={handleSave}
             className="flex h-6 items-center gap-1 rounded-md px-2 text-[11px] text-white/55 hover:bg-white/[0.06] hover:text-white"
           >
             <Plus className="h-3 w-3" /> New note
@@ -148,11 +380,7 @@ export function NotesView({
                 {recent.slice(0, 5).map((item) => (
                   <button
                     key={item.id}
-                    onClick={() => {
-                      setNote(item);
-                      setSaved(true);
-                      setListOpen(false);
-                    }}
+                    onClick={() => openRecent(item)}
                     className="group flex h-10 w-full items-center rounded-lg px-2 text-left hover:bg-white/[0.06]"
                   >
                     <span className="min-w-0 flex-1">
@@ -168,8 +396,7 @@ export function NotesView({
                       aria-label="Delete note"
                       onClick={(event) => {
                         event.stopPropagation();
-                        noteService.remove(item.id);
-                        setRecent(noteService.list());
+                        deleteRecent(item);
                       }}
                       className="grid h-6 w-6 place-items-center rounded-md text-white/30 opacity-0 hover:bg-white/10 hover:text-white group-hover:opacity-100"
                     >

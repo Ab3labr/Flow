@@ -11,11 +11,17 @@ export type UiPhase = "stable" | "expanding" | "collapsing";
 
 export type OpenRequest = {
   tab?: string;
-  source?: "hover" | "alt" | "tray";
+  source?: "hover" | "alt" | "tray" | "hotkey";
   pinned?: boolean;
 };
 
 export type CloseRequest = { source?: "alt" | "esc" | "outside" };
+
+export type HotkeyFailures = {
+  notes: string | null;
+  next: string | null;
+  prev: string | null;
+};
 
 /**
  * One command owns all window geometry. The plan already carries the mode
@@ -112,6 +118,35 @@ export function onCloseRequest(handler: (request: CloseRequest) => void): Promis
   );
   void registration.then(() => debugLog("[ui] listener registered: close-request"));
   return registration;
+}
+
+/** Gated global-hotkey trigger: open Notes with a fresh draft. */
+export function onOpenNotesRequest(handler: (request: OpenRequest) => void): Promise<() => void> {
+  if (!isTauriApp) return Promise.resolve(() => {});
+  const registration = registerTauriListener(
+    listen<OpenRequest | null>("open-notes", (event) => {
+      debugLog(`[ui] open-notes received source=${event.payload?.source ?? "?"}`);
+      handler(event.payload ?? {});
+    }),
+  );
+  void registration.then(() => debugLog("[ui] listener registered: open-notes"));
+  return registration;
+}
+
+/** Last `RegisterHotKey` result, pushed on every settings change. */
+export function onHotkeyStatus(handler: (status: HotkeyFailures) => void): Promise<() => void> {
+  if (!isTauriApp) return Promise.resolve(() => {});
+  const registration = registerTauriListener(
+    listen<HotkeyFailures>("hotkeys-status", (event) => handler(event.payload)),
+  );
+  void registration.then(() => debugLog("[ui] listener registered: hotkeys-status"));
+  return registration;
+}
+
+/** Initial registration state for the Settings tab. */
+export function getHotkeyStatus(): Promise<HotkeyFailures> {
+  if (!isTauriApp) return Promise.resolve({ notes: null, next: null, prev: null });
+  return invoke<HotkeyFailures>("hotkeys_status");
 }
 
 /** Focuses the notch window once Rust has shown it. */

@@ -5,6 +5,7 @@ import {
   powerService as tauriPowerService,
   settingsService as tauriSettingsService,
   timerService as tauriTimerService,
+  notesService as tauriNotesService,
 } from "./tauriServices";
 
 export * from "./types";
@@ -16,6 +17,6 @@ export const powerService = isMockMode ? mock.powerService : tauriPowerService;
 export const calendarService = mock.calendarService;
 export const timerService = isMockMode ? mock.timerService : tauriTimerService;
 export const captureService = mock.captureService;
-export const noteService = mock.noteService;
+export const noteService = isMockMode ? mock.noteService : tauriNotesService;
 
 export const settingsService = isMockMode ? mock.settingsService : tauriSettingsService;

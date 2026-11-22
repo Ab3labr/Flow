@@ -1,8 +1,15 @@
 import { Plus } from "lucide-react";
 import { motion } from "motion/react";
-import { useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 import { CalendarAccount, CalendarProvider, type NotchSettings } from "../services";
 import { isMockMode } from "../services/env";
+import {
+  formatPressedKey,
+  shortcutConflictsWithHotkeys,
+  validateHotkeys,
+  type ShortcutField,
+} from "../services/shortcuts";
+import type { HotkeyFailures } from "../services/uiService";
 import { CalendarAccountRow, CalendarConnectSheet } from "./CalendarConnect";
 
 export type { NotchSettings };
@@ -37,9 +44,52 @@ function Toggle({ value: on, onChange }: { value: boolean; onChange: () => void 
   );
 }
 
+function ShortcutInput({
+  label,
+  value,
+  error,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  error?: string | null;
+  onChange: (value: string) => void;
+}) {
+  const capture = (event: KeyboardEvent<HTMLInputElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onChange(formatPressedKey(event.key, event));
+  };
+  return (
+    <input
+      aria-label={label}
+      title={error ?? undefined}
+      value={value}
+      readOnly
+      onKeyDown={capture}
+      className={`w-[72px] shrink-0 rounded-md border bg-[#1c1c1c] px-1 py-0.5 text-center text-[11px] outline-none focus-visible:ring-2 focus-visible:ring-white/70 ${
+        error ? "border-[#ff453a] text-[#ff453a]" : "border-white/10 text-white/60"
+      }`}
+    />
+  );
+}
+
+const HOTKEY_ROWS: { field: ShortcutField; label: string }[] = [
+  { field: "hotkeyNotes", label: "Open Notes" },
+  { field: "hotkeyNext", label: "Next track" },
+  { field: "hotkeyPrev", label: "Previous track" },
+];
+
+const FAILURE_KEY: Record<ShortcutField, keyof HotkeyFailures> = {
+  hotkeyNotes: "notes",
+  hotkeyNext: "next",
+  hotkeyPrev: "prev",
+};
+
 export function SettingsView({
   settings,
   accounts,
+  hotkeyFailures,
   onChange,
   onConnect,
   onToggleAccount,
@@ -48,6 +98,7 @@ export function SettingsView({
 }: {
   settings: NotchSettings;
   accounts: CalendarAccount[];
+  hotkeyFailures: HotkeyFailures;
   onChange: (settings: NotchSettings) => void;
   onConnect: (provider: CalendarProvider) => void;
   onToggleAccount: (id: string) => void;
@@ -55,6 +106,10 @@ export function SettingsView({
   onReconnect: (id: string) => void;
 }) {
   const [connectOpen, setConnectOpen] = useState(false);
+  const [captureErrors, setCaptureErrors] = useState<
+    Partial<Record<ShortcutField | "shortcut", string>>
+  >({});
+  const validation = validateHotkeys(settings);
   const rows: { key: keyof NotchSettings; label: string; demo?: boolean }[] = [
     { key: "topEdge", label: "Open at top edge" },
     { key: "altAlt", label: "Open with Alt Alt" },
@@ -72,6 +127,33 @@ export function SettingsView({
     { key: "compactRecording", label: "Recording" },
     { key: "compactCharging", label: "Charging" },
   ];
+
+  const setCaptureError = (field: ShortcutField | "shortcut", message: string | null) => {
+    setCaptureErrors((current) => ({ ...current, [field]: message ?? undefined }));
+  };
+
+  const captureHotkey = (field: ShortcutField, value: string) => {
+    const next = { ...settings, [field]: value };
+    const error = validateHotkeys(next)[field];
+    if (error) {
+      setCaptureError(field, error);
+      return;
+    }
+    setCaptureError(field, null);
+    onChange(next);
+  };
+
+  const captureDoubleAlt = (value: string) => {
+    if (shortcutConflictsWithHotkeys(value, settings)) {
+      setCaptureError("shortcut", "Shortcut already used");
+      return;
+    }
+    setCaptureError("shortcut", null);
+    onChange({ ...settings, shortcut: value });
+  };
+
+  const hotkeyError = (field: ShortcutField): string | null =>
+    hotkeyFailures[FAILURE_KEY[field]] ?? captureErrors[field] ?? validation[field] ?? null;
 
   return (
     <div className="relative h-[288px] overflow-hidden">
@@ -96,29 +178,11 @@ export function SettingsView({
                 </span>
                 <div className="flex items-center gap-2">
                   {key === "altAlt" && (
-                    <input
-                      aria-label="Open shortcut"
+                    <ShortcutInput
+                      label="Open shortcut"
                       value={settings.shortcut}
-                      readOnly
-                      onKeyDown={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        const pressedKey =
-                          event.key === " "
-                            ? "Space"
-                            : event.key.length === 1
-                              ? event.key.toUpperCase()
-                              : event.key.replace("Control", "Ctrl");
-                        const parts = [
-                          event.ctrlKey && pressedKey !== "Ctrl" ? "Ctrl" : "",
-                          event.altKey && pressedKey !== "Alt" ? "Alt" : "",
-                          event.shiftKey && pressedKey !== "Shift" ? "Shift" : "",
-                          event.metaKey && pressedKey !== "Meta" ? "Meta" : "",
-                          pressedKey,
-                        ].filter(Boolean);
-                        onChange({ ...settings, shortcut: parts.join(" + ") });
-                      }}
-                      className="w-[58px] rounded-md border border-white/10 bg-[#1c1c1c] px-1 py-0.5 text-center text-[11px] text-white/60"
+                      error={captureErrors.shortcut}
+                      onChange={captureDoubleAlt}
                     />
                   )}
                   <Toggle
@@ -129,6 +193,50 @@ export function SettingsView({
               </div>
             ))}
         </div>
+
+        <p className="mb-1.5 mt-3 text-[11px] font-semibold uppercase tracking-[.08em] text-white/40">
+          Shortcuts
+        </p>
+        <div className="overflow-hidden rounded-[14px] border border-[#1f1f1f] bg-[#121212]">
+          <div className="flex h-8 items-center justify-between border-b border-white/[0.06] px-2.5">
+            <span
+              className={`text-[11px] transition-colors ${
+                settings.hotkeysEnabled ? "text-white" : "text-white/50"
+              }`}
+            >
+              Global shortcuts
+            </span>
+            <Toggle
+              value={settings.hotkeysEnabled}
+              onChange={() => onChange({ ...settings, hotkeysEnabled: !settings.hotkeysEnabled })}
+            />
+          </div>
+          {HOTKEY_ROWS.map(({ field, label }) => {
+            const error = hotkeyError(field);
+            return (
+              <div
+                key={field}
+                className={`flex min-h-8 items-center justify-between gap-2 border-b border-white/[0.06] px-2.5 py-1 last:border-0 ${
+                  settings.hotkeysEnabled ? "" : "opacity-50"
+                }`}
+              >
+                <div className="min-w-0">
+                  <span className="block text-[11px] text-white">{label}</span>
+                  {error && <span className="block text-[10px] text-[#ff453a]">{error}</span>}
+                </div>
+                <ShortcutInput
+                  label={`${label} shortcut`}
+                  value={settings[field]}
+                  error={error}
+                  onChange={(value) => captureHotkey(field, value)}
+                />
+              </div>
+            );
+          })}
+        </div>
+        <p className="mb-1.5 mt-1.5 text-[10px] text-white/35">
+          Click a shortcut, then press a modifier and key. Held keys fire once.
+        </p>
 
         <p className="mb-1.5 mt-3 text-[11px] font-semibold uppercase tracking-[.08em] text-white/40">
           Compact bar

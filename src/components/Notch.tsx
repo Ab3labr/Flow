@@ -17,10 +17,14 @@ import { debugLog } from "../services/debugLog";
 import { isMockMode, isTauriApp } from "../services/env";
 import {
   focusNotchWindow,
+  getHotkeyStatus,
   isFullscreenAppActive,
   onCloseRequest,
+  onHotkeyStatus,
+  onOpenNotesRequest,
   onOpenRequest,
   uiReady,
+  type HotkeyFailures,
 } from "../services/uiService";
 import {
   COMPACT_BAR_HEIGHT,
@@ -37,6 +41,7 @@ import { useWindowTransition } from "../live/useWindowTransition";
 import type { Surface, WindowTarget } from "../live/windowTransition";
 import { CalendarView } from "./CalendarView";
 import { CaptureView } from "./CaptureView";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { EventCard, JoinButton } from "./EventCard";
 import { MusicCard } from "./MusicCard";
 import { NotesView } from "./NotesView";
@@ -155,6 +160,12 @@ export function Notch() {
   const [recordingTime, setRecordingTime] = useState(0);
   const [notesHeight, setNotesHeight] = useState(172);
   const [newNoteRequest, setNewNoteRequest] = useState(0);
+  const [notesFlushRequest, setNotesFlushRequest] = useState(0);
+  const [hotkeyFailures, setHotkeyFailures] = useState<HotkeyFailures>({
+    notes: null,
+    next: null,
+    prev: null,
+  });
   const [accounts, setAccounts] = useState<CalendarAccount[]>(calendarService.getDefaultAccounts);
   const [meetingActivity, setMeetingActivity] = useState<LiveActivity | null>(null);
   const [settings, setSettings] = useState<NotchSettings>(DEFAULT_NOTCH_SETTINGS);
@@ -165,6 +176,15 @@ export function Notch() {
   const remindedEvent = useRef<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const expandedRef = useRef(false);
+  const tabRef = useRef<TabId>("home");
+  const notesFlushRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const registerNotesFlush = useCallback((flush: () => Promise<void>) => {
+    notesFlushRef.current = flush;
+  }, []);
+  const changeTab = useCallback((next: TabId) => {
+    if (tabRef.current === "notes" && next !== "notes") void notesFlushRef.current();
+    setTab(next);
+  }, []);
   const settingsRef = useRef<NotchSettings>(DEFAULT_NOTCH_SETTINGS);
   const settingsSaveSequence = useRef(0);
   const track = isMockMode ? mockTracks[trackIndex] : realTrack;
@@ -303,6 +323,10 @@ export function Notch() {
   }, [expanded]);
 
   useEffect(() => {
+    tabRef.current = tab;
+  }, [tab]);
+
+  useEffect(() => {
     let cancelled = false;
     void settingsService
       .load()
@@ -316,6 +340,28 @@ export function Notch() {
       });
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  // Global hotkey registration failures are reported by Rust at startup and
+  // after every settings change; keep the latest state for the Settings tab.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void getHotkeyStatus()
+      .then((status) => {
+        if (!disposed) setHotkeyFailures(status);
+      })
+      .catch((error) => console.error("failed to load hotkey status", error));
+    void onHotkeyStatus((status) => {
+      if (!disposed) setHotkeyFailures(status);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
     };
   }, []);
 
@@ -547,7 +593,7 @@ export function Notch() {
       // Rust decides pinning: hover is unpinned, keyboard/tray are pinned.
       setPinned(request.pinned ?? request.source !== "hover");
       setExpanded(true);
-      if (request.tab && isTabId(request.tab)) setTab(request.tab);
+      if (request.tab && isTabId(request.tab)) changeTab(request.tab);
       if (request.source === "alt") {
         // Best effort: Esc works without focus because Rust owns the hook.
         window.clearTimeout(focusTimer.current);
@@ -561,15 +607,47 @@ export function Notch() {
       disposed = true;
       unlisten?.();
     };
-  }, []);
+  }, [changeTab]);
 
   const close = useCallback(() => {
+    if (tabRef.current === "notes") void notesFlushRef.current();
     window.clearTimeout(focusTimer.current);
     window.clearTimeout(dissolveTimer.current);
     dissolveTimer.current = undefined;
     setPinned(false);
     setExpanded(false);
   }, []);
+
+  // Global Alt+N is a toggle with one destination: Notes. A closed panel opens
+  // pinned on a fresh draft; an open Notes tab flushes and closes; any other
+  // open tab switches to Notes with a fresh draft.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void onOpenNotesRequest((request) => {
+      window.clearTimeout(hoverTimer.current);
+      window.clearTimeout(leaveTimer.current);
+      const pinned = request.pinned ?? true;
+      if (expandedRef.current && tabRef.current === "notes") {
+        close();
+        return;
+      }
+      void notesFlushRef.current();
+      setPinned(pinned);
+      setExpanded(true);
+      setTab("notes");
+      setNewNoteRequest((value) => value + 1);
+      window.clearTimeout(focusTimer.current);
+      focusTimer.current = window.setTimeout(focusNotchWindow, 80);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [close]);
 
   /** Start/Record collapse the panel into the live bar after a short beat. */
   const collapseIntoBar = useCallback(() => {
@@ -789,7 +867,7 @@ export function Notch() {
     window.clearTimeout(leaveTimer.current);
     window.clearTimeout(hoverTimer.current);
     if (compact && !expanded && topActivity?.hover === "expand") {
-      setTab(topActivity.expandTab ?? "home");
+      changeTab(topActivity.expandTab ?? "home");
       setExpanded(true);
     }
   };
@@ -797,7 +875,7 @@ export function Notch() {
   const openPinnedFromBar = () => {
     window.clearTimeout(hoverTimer.current);
     window.clearTimeout(leaveTimer.current);
-    setTab(topActivity?.expandTab ?? "home");
+    changeTab(topActivity?.expandTab ?? "home");
     setPinned(true);
     setExpanded(true);
   };
@@ -856,7 +934,7 @@ export function Notch() {
   };
 
   const openNewNote = () => {
-    setTab("notes");
+    changeTab("notes");
     setNewNoteRequest((request) => request + 1);
   };
 
@@ -891,9 +969,9 @@ export function Notch() {
 
   const home = showIdleHome ? (
     <IdleHome
-      onTimer={() => setTab("timer")}
+      onTimer={() => changeTab("timer")}
       onNote={openNewNote}
-      onSnip={() => setTab("capture")}
+      onSnip={() => changeTab("capture")}
     />
   ) : (
     <motion.div layout className="flex h-[120px] gap-2 px-1">
@@ -928,51 +1006,69 @@ export function Notch() {
   );
 
   const content: Record<TabId, React.ReactNode> = {
-    home,
-    timer: <TimerView timer={timer} onStarted={handleTimerStarted} />,
+    home: <ErrorBoundary tab="Home">{home}</ErrorBoundary>,
+    timer: (
+      <ErrorBoundary tab="Timer">
+        <TimerView timer={timer} onStarted={handleTimerStarted} />
+      </ErrorBoundary>
+    ),
     calendar: (
-      <CalendarView
-        accounts={visibleAccounts}
-        events={events}
-        onConnect={connectCalendar}
-        onReconnect={reconnectCalendar}
-      />
+      <ErrorBoundary tab="Calendar">
+        <CalendarView
+          accounts={visibleAccounts}
+          events={events}
+          onConnect={connectCalendar}
+          onReconnect={reconnectCalendar}
+        />
+      </ErrorBoundary>
     ),
     notes: (
-      <NotesView
-        newNoteRequest={newNoteRequest}
+      <ErrorBoundary
+        tab="Notes"
+        showOpenNotesFolder
         onHeightChange={(height) => setNotesHeight(Math.max(172, Math.min(340, height)))}
-        onRequestHandled={() => setNewNoteRequest(0)}
-      />
+      >
+        <NotesView
+          newNoteRequest={newNoteRequest}
+          onHeightChange={(height) => setNotesHeight(Math.max(172, Math.min(340, height)))}
+          onRequestHandled={() => setNewNoteRequest(0)}
+          onFlushReady={registerNotesFlush}
+        />
+      </ErrorBoundary>
     ),
     capture: (
-      <CaptureView
-        recording={recording}
-        elapsed={recordingTime}
-        onRecordingChange={(value) => {
-          setRecording(value);
-          if (value) {
-            setRecordingTime(0);
-            if (settings.compactBar && settings.compactRecording) collapseIntoBar();
-          } else {
-            window.clearTimeout(dissolveTimer.current);
-            dissolveTimer.current = undefined;
-          }
-        }}
-      />
+      <ErrorBoundary tab="Capture">
+        <CaptureView
+          recording={recording}
+          elapsed={recordingTime}
+          onRecordingChange={(value) => {
+            setRecording(value);
+            if (value) {
+              setRecordingTime(0);
+              if (settings.compactBar && settings.compactRecording) collapseIntoBar();
+            } else {
+              window.clearTimeout(dissolveTimer.current);
+              dissolveTimer.current = undefined;
+            }
+          }}
+        />
+      </ErrorBoundary>
     ),
     settings: (
-      <SettingsView
-        settings={settings}
-        accounts={visibleAccounts}
-        onChange={updateSettings}
-        onConnect={connectCalendar}
-        onToggleAccount={toggleCalendar}
-        onDisconnect={(id) =>
-          setAccounts((current) => current.filter((account) => account.id !== id))
-        }
-        onReconnect={reconnectCalendar}
-      />
+      <ErrorBoundary tab="Settings">
+        <SettingsView
+          settings={settings}
+          accounts={visibleAccounts}
+          hotkeyFailures={hotkeyFailures}
+          onChange={updateSettings}
+          onConnect={connectCalendar}
+          onToggleAccount={toggleCalendar}
+          onDisconnect={(id) =>
+            setAccounts((current) => current.filter((account) => account.id !== id))
+          }
+          onReconnect={reconnectCalendar}
+        />
+      </ErrorBoundary>
     ),
   };
 
@@ -1053,7 +1149,7 @@ export function Notch() {
                   setPinned(true);
               }}
             >
-              <TopBar active={tab} onChange={setTab} />
+              <TopBar active={tab} onChange={changeTab} />
               <div className="mt-1.5">
                 <AnimatePresence mode="wait">
                   <motion.div

@@ -43,6 +43,29 @@ cd src-tauri && cargo test
 - When blocked: record it in docs/PROGRESS.md, use the documented
   fallback, keep going.
 
+## PRIVACY (permanent owner decision)
+
+Float is free, easy to use and private forever.
+
+- No server or database of its own, no account, no analytics, no telemetry,
+  no crash reporting and no automatic update check.
+- Everything the user creates (notes, settings, timer and calendar data)
+  lives only on their PC.
+- Network access exists only for features the user turns on themselves and
+  goes straight to the service they chose (their own Google, Microsoft or
+  ICS calendar). No Float-owned server in between. Nothing is uploaded
+  without a user action.
+- Sending song titles, event titles, note text or any other personal content
+  to a third party is NOT allowed — including online album-art lookups.
+- The webview CSP must block all external `connect`/`font`/`img`/`script`/
+  `frame` sources; only Tauri IPC (and the localhost dev server in dev) are
+  permitted. See `src-tauri/tauri.conf.json` and `docs/PRIVACY.md`.
+- Debug/info logging is off unless `FLOAT_DEBUG=1`; error-level crash logs are
+  always recorded. Logs stay in `%APPDATA%\Float\logs`, rotate/truncate at 1 MB,
+  never include note bodies or file contents, and are never uploaded.
+- Keep `docs/PRIVACY.md` current: every new file/store or outbound request
+  must be added to its inventories before the change lands.
+
 ## Project structure
 
 - `src/App.tsx` — entry component (prototype fake desktop; real app

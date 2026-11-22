@@ -80,6 +80,7 @@ struct QueuedTrigger {
 #[derive(Default)]
 struct TriggerQueue {
   open: Option<QueuedTrigger>,
+  open_notes: Option<QueuedTrigger>,
   close: Option<QueuedTrigger>,
 }
 
@@ -201,6 +202,7 @@ impl AppState {
     let mut queue = self.lock_queue();
     match kind {
       TriggerKind::Open => queue.open = Some(entry),
+      TriggerKind::OpenNotes => queue.open_notes = Some(entry),
       TriggerKind::Close => queue.close = Some(entry),
     }
   }
@@ -211,6 +213,9 @@ impl AppState {
     let mut out = Vec::new();
     if let Some(entry) = queue.open.take() {
       out.push((TriggerKind::Open, entry));
+    }
+    if let Some(entry) = queue.open_notes.take() {
+      out.push((TriggerKind::OpenNotes, entry));
     }
     if let Some(entry) = queue.close.take() {
       out.push((TriggerKind::Close, entry));
@@ -223,6 +228,7 @@ impl AppState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriggerKind {
   Open,
+  OpenNotes,
   Close,
 }
 
@@ -230,6 +236,7 @@ impl TriggerKind {
   fn event(self) -> &'static str {
     match self {
       Self::Open => "open-request",
+      Self::OpenNotes => "open-notes",
       Self::Close => "close-request",
     }
   }
@@ -548,6 +555,10 @@ pub fn emit_open_request(app: &tauri::AppHandle, payload: serde_json::Value) {
   emit_trigger(app, TriggerKind::Open, payload);
 }
 
+pub fn emit_open_notes_request(app: &tauri::AppHandle, payload: serde_json::Value) {
+  emit_trigger(app, TriggerKind::OpenNotes, payload);
+}
+
 pub fn emit_close_request(app: &tauri::AppHandle, payload: serde_json::Value) {
   emit_trigger(app, TriggerKind::Close, payload);
 }
@@ -848,14 +859,20 @@ mod tests {
     state.queue(TriggerKind::Open, serde_json::json!({ "source": "hover" }));
     // A second open replaces the first: only the newest startup trigger counts.
     state.queue(TriggerKind::Open, serde_json::json!({ "source": "alt" }));
+    state.queue(
+      TriggerKind::OpenNotes,
+      serde_json::json!({ "source": "hotkey" }),
+    );
     state.queue(TriggerKind::Close, serde_json::json!({ "source": "esc" }));
 
     let queued = state.take_queued();
-    assert_eq!(queued.len(), 2);
+    assert_eq!(queued.len(), 3);
     assert_eq!(queued[0].0, TriggerKind::Open);
     assert_eq!(queued[0].1.payload["source"], "alt");
-    assert_eq!(queued[1].0, TriggerKind::Close);
-    assert_eq!(queued[1].1.payload["source"], "esc");
+    assert_eq!(queued[1].0, TriggerKind::OpenNotes);
+    assert_eq!(queued[1].1.payload["source"], "hotkey");
+    assert_eq!(queued[2].0, TriggerKind::Close);
+    assert_eq!(queued[2].1.payload["source"], "esc");
     // Draining clears the queue so ui_ready delivers each kind once.
     assert!(state.take_queued().is_empty());
   }
@@ -871,6 +888,7 @@ mod tests {
   #[test]
   fn trigger_event_names_match_the_frontend_contract() {
     assert_eq!(TriggerKind::Open.event(), "open-request");
+    assert_eq!(TriggerKind::OpenNotes.event(), "open-notes");
     assert_eq!(TriggerKind::Close.event(), "close-request");
   }
 

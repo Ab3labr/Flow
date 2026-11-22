@@ -406,11 +406,19 @@ export const noteService = {
     writeNotes([note, ...readNotes()]);
     return note;
   },
-  save: (note: Note) => {
-    const notes = readNotes().filter((item) => item.id !== note.id);
-    const saved = { ...note, updatedAt: Date.now() };
-    writeNotes([saved, ...notes]);
-    return saved;
+  save: async (id: string | null, title: string, body: string) => {
+    // If both title and body are empty, don't create a file (return null id)
+    if (!title.trim() && !body.trim()) {
+      return { id: null, modifiedMs: Date.now() };
+    }
+    const note: Note = {
+      id: id || crypto.randomUUID(),
+      title: title.trim(),
+      body: body.trim(),
+      updatedAt: Date.now(),
+    };
+    writeNotes([note, ...readNotes()]);
+    return { id: note.id, modifiedMs: note.updatedAt };
   },
   remove: (id: string) => {
     writeNotes(readNotes().filter((note) => note.id !== id));
