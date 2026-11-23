@@ -2,7 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { debugLog } from "./debugLog";
 import { registerTauriListener } from "./listenerRegistry";
-import type { NotchSettings, PowerState, TimerSnapshot, Track } from "./types";
+import type {
+  NotchSettings,
+  PowerState,
+  PrivacyState,
+  TimerSnapshot,
+  Track,
+} from "./types";
 
 type AppSettings = {
   notch: NotchSettings;
@@ -59,6 +65,33 @@ export const powerService = {
     powerListeners.add(handler);
     return () => {
       powerListeners.delete(handler);
+    };
+  },
+};
+
+/** Rust emits `privacy-state` only for new mic/camera usage starts. */
+let privacyStarted: Promise<void> | null = null;
+const privacyListeners = new Set<(state: PrivacyState) => void>();
+
+function ensurePrivacyStarted(): Promise<void> {
+  if (!privacyStarted) {
+    privacyStarted = registerTauriListener(
+      listen<PrivacyState>("privacy-state", (event) => {
+        for (const listener of privacyListeners) listener(event.payload);
+      }),
+    ).then(() => {
+      debugLog("[ui] listener registered: privacy-state");
+    });
+  }
+  return privacyStarted;
+}
+
+export const privacyService = {
+  subscribe: async (handler: (state: PrivacyState) => void): Promise<() => void> => {
+    await ensurePrivacyStarted();
+    privacyListeners.add(handler);
+    return () => {
+      privacyListeners.delete(handler);
     };
   },
 };

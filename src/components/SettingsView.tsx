@@ -119,13 +119,19 @@ export function SettingsView({
     { key: "noCalendars", label: "Demo: no calendars connected", demo: true },
   ];
   const compactRows: {
-    key: "compactMusic" | "compactTimer" | "compactRecording" | "compactCharging";
+    key:
+      | "compactMusic"
+      | "compactTimer"
+      | "compactRecording"
+      | "compactCharging"
+      | "compactPrivacy";
     label: string;
   }[] = [
     { key: "compactMusic", label: "Music" },
     { key: "compactTimer", label: "Timer countdown" },
     { key: "compactRecording", label: "Recording" },
     { key: "compactCharging", label: "Charging" },
+    { key: "compactPrivacy", label: "Mic & camera" },
   ];
 
   const setCaptureError = (field: ShortcutField | "shortcut", message: string | null) => {

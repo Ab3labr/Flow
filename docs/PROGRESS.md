@@ -62,9 +62,9 @@ not started / in progress / done / blocked
 
 ### Phase 3D — Compact live bar
 - [x] Reusable `src/live` system: `LiveActivity` slots, priority picker
-      (recording 100 / charging 95 / timer done 90 / meeting 80 / timer 60 /
-      music 10), external store with register/update/remove, one `CompactBar`
-      renderer
+      (recording 100 / privacy 97 / charging 95 / timer done 90 / meeting 80 /
+      timer 60 / music 10), external store with register/update/remove, one
+      `CompactBar` renderer
 - [x] Music activity while playing; paused keeps flat bars for 3 s then
       removes; no session means no activity
 - [x] Compact-bar gate from Rust `isMusicApp` (browser album heuristic);
@@ -290,6 +290,37 @@ not started / in progress / done / blocked
 - [x] Verification: `cargo test` ✓ 117 passed, `cargo check` ✓ (existing
       `notes.rs` stub warnings only), `pnpm exec tsc --noEmit` ✓ 0 errors,
       `pnpm test` ✓ 38 passed, `pnpm build` ✓.
+
+## Mic/camera usage indicator (Phase 5 follow-up, 2026-11-23)
+- [x] Added `src-tauri/src/privacy_indicator.rs`: read-only HKCU
+      CapabilityAccessManager polling every 1 s for both `microphone` and
+      `webcam`; desktop apps under `NonPackaged` (exe path `#`-escaped) and
+      packaged apps by family name; QWORD FILETIME start/stop values only.
+      No audio/video API, no admin rights, no network.
+- [x] Silent first snapshot; `detect_starts(prev, curr)` fires only on a
+      new/changed `LastUsedTimeStart` with `start > stop`. Unit tests cover new
+      start, changed start, unchanged, stop, stale baseline, two apps, separate
+      mic/camera tracking, friendly names, silent baseline, cooldown and
+      combining.
+- [x] 30 s cooldown per friendly app/device kind; mic + camera starts within
+      1 s are buffered one poll and emitted as one `privacy-state` event
+      `{ kinds: ["microphone" | "camera"], app }`.
+- [x] Windows registry access uses the existing `windows` crate's new
+      `Win32_System_Registry` feature (no new crate); with `FLOAT_DEBUG=1` raw
+      subkey names are logged locally. Justification in `docs/DECISIONS.md`.
+- [x] Frontend `privacyService.subscribe` uses `registerTauriListener`; new
+      starts become 4 s transient activities at priority 97 above charging,
+      hover `"none"`, orange mic / green camera (both for combined), fixed
+      labels and truncated trailing app name.
+- [x] Added persisted `compactPrivacy` (default true in Rust and TypeScript),
+      a "Mic & camera" row in COMPACT BAR using the shared Toggle, live apply,
+      `compactBar` master respect, and full suppression while the panel is open.
+- [x] Docs updated: `docs/DECISIONS.md` (route + no-new-crate justification),
+      `docs/PRIVACY.md` (timestamp-only, local-only, nothing leaves the PC),
+      `docs/FEATURES.md` and this file.
+- [x] Verification: `cargo test` ✓ 129 passed, `cargo check` ✓ (pre-existing
+      `notes.rs` warnings only), `pnpm exec tsc --noEmit` ✓ 0 errors,
+      `pnpm test` ✓ 42 passed, `pnpm build` ✓.
 
 ## How to run
 

@@ -8,11 +8,13 @@ import {
   calendarService,
   mediaService,
   powerService,
+  privacyService,
   settingsService,
   type NotchSettings,
   type Track,
 } from "../services";
 import { powerActivity, reducePowerEvent } from "../live/powerActivity";
+import { privacyActivity } from "../live/privacyActivity";
 import { debugLog } from "../services/debugLog";
 import { isMockMode, isTauriApp } from "../services/env";
 import {
@@ -551,6 +553,38 @@ export function Notch() {
       stopPower();
     };
   }, [settings.compactBar, settings.compactCharging, register, remove, update]);
+
+  // New mic/camera usage is read locally by Rust from HKCU usage timestamps.
+  // While the full panel is open the indicator is suppressed entirely so it
+  // cannot pop the compact bar back up underneath the panel.
+  useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+
+    if (expanded || !settings.compactBar || !settings.compactPrivacy) {
+      remove("privacy");
+      return;
+    }
+
+    void privacyService
+      .subscribe((state) => {
+        if (disposed || expandedRef.current) return;
+        // Replace the previous slot so every new start gets a fresh 4 s TTL.
+        remove("privacy");
+        register(privacyActivity(state));
+      })
+      .then((unsubscribe) => {
+        if (disposed) unsubscribe();
+        else stop = unsubscribe;
+      })
+      .catch((error) => console.error("privacy subscribe failed", error));
+
+    return () => {
+      disposed = true;
+      stop?.();
+      remove("privacy");
+    };
+  }, [expanded, settings.compactBar, settings.compactPrivacy, register, remove]);
 
   // Debug-only: time from activity registration to the bar becoming visible.
   useEffect(() => {

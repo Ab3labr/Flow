@@ -44,6 +44,12 @@ export type PowerState = {
   transition: PowerTransition;
 };
 
+/** Rust `privacy-state` payload: local HKCU usage-timestamp starts only. */
+export type PrivacyState = {
+  kinds: ("microphone" | "camera")[];
+  app: string;
+};
+
 export type CalendarEvent = {
   id: string;
   accountId: string;
@@ -88,6 +94,7 @@ export type NotchSettings = {
   compactTimer: boolean;
   compactRecording: boolean;
   compactCharging: boolean;
+  compactPrivacy: boolean;
   shortcut: string;
   hotkeysEnabled: boolean;
   hotkeyNotes: string;
@@ -107,6 +114,7 @@ export const DEFAULT_NOTCH_SETTINGS: NotchSettings = {
   compactTimer: true,
   compactRecording: true,
   compactCharging: true,
+  compactPrivacy: true,
   shortcut: "Alt Alt",
   hotkeysEnabled: true,
   hotkeyNotes: "Alt+N",

@@ -59,6 +59,22 @@ timers. Timer state comes from `useTimer()` (see TimerView).
 - If Windows cannot register a combination, the app stays open and the row
   shows `In use by another app` in red in Settings.
 
+### Mic/camera usage indicator (real app)
+- Reads only Windows' own HKCU CapabilityAccessManager usage timestamps
+  (`LastUsedTimeStart` / `LastUsedTimeStop`) once a second. No audio or video
+  device is ever opened and no data leaves the PC.
+- The startup snapshot is a silent baseline. A later start fires only when
+  `LastUsedTimeStart` is new/changed and `start > stop` (`stop = 0` still in
+  use); stopping alone never fires. The same app and device kind has a 30 s
+  cooldown, and mic + camera starts within 1 s become one event.
+- Each start shows a 4 s transient compact-bar activity (priority 97, above
+  charging; hover `"none"`). Leading: orange (`#ff9f0a`) mic, green
+  (`#30d158`) camera, or both for a combined start. Label: `"Microphone"`,
+  `"Camera"` or `"Camera and mic"`. Trailing: the friendly app name, truncated.
+- Nothing is shown while the full panel is open. `compactPrivacy` defaults on,
+  follows the `compactBar` master toggle, and has a `"Mic & camera"` row in the
+  COMPACT BAR settings section; changes apply live.
+
 ## Notes (Phase 5B)
 
 ### Card
@@ -245,8 +261,8 @@ timer state. Smallest text is 11px.
   the master's children dim when it is off. All changes apply live.
 - "COMPACT BAR" section: master `compactBar` ("Show compact bar") plus
   indented children `compactMusic`, `compactTimer`, `compactRecording`,
-  `compactCharging` (Music/Timer/Recording/Charging). Children dim when the
-  master is off; all toggles apply live.
+  `compactCharging`, `compactPrivacy` (Music/Timer/Recording/Charging/
+  Mic & camera). Children dim when the master is off; all toggles apply live.
 
 ## Meeting links
 `getMeetingProvider` scans `location + description` for

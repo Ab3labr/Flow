@@ -55,6 +55,16 @@ function sameLeading(a: LiveLeading, b: LiveLeading): boolean {
       return a.progress === (b as typeof a).progress;
     case "recordingDot":
       return a.color === (b as typeof a).color;
+    case "icons": {
+      const other = b as typeof a;
+      return (
+        a.icons.length === other.icons.length &&
+        a.icons.every(
+          (icon, index) =>
+            icon.name === other.icons[index].name && icon.color === other.icons[index].color,
+        )
+      );
+    }
     case "pulse":
       return a.name === (b as typeof a).name && a.color === (b as typeof a).color;
   }

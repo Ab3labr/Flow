@@ -7,6 +7,7 @@ export type LiveLeading =
   | { type: "icon"; name: string; color?: string }
   | { type: "ring"; progress: number }
   | { type: "recordingDot"; color: string }
+  | { type: "icons"; icons: { name: string; color: string }[] }
   | { type: "pulse"; name: string; color?: string };
 
 export type LiveTrailing =

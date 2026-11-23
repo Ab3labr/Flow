@@ -3,6 +3,7 @@ import * as mock from "./mockServices";
 import {
   mediaService as tauriMediaService,
   powerService as tauriPowerService,
+  privacyService as tauriPrivacyService,
   settingsService as tauriSettingsService,
   timerService as tauriTimerService,
   notesService as tauriNotesService,
@@ -14,6 +15,7 @@ export * from "./types";
 // far; the rest stay mock until their phases land.
 export const mediaService = isMockMode ? mock.mediaService : tauriMediaService;
 export const powerService = isMockMode ? mock.powerService : tauriPowerService;
+export const privacyService = isMockMode ? mock.privacyService : tauriPrivacyService;
 export const calendarService = mock.calendarService;
 export const timerService = isMockMode ? mock.timerService : tauriTimerService;
 export const captureService = mock.captureService;

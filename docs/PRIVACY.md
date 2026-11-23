@@ -25,14 +25,32 @@ adding any file/store or outbound request. See `AGENTS.md` (PRIVACY) and
   at 1 MB, never include note bodies, note text or file contents, and are never
   uploaded.
 
+## (aa) Mic/camera usage records (read-only)
+
+- Float reads only Windows' own usage records under
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone`
+  and `...\webcam`: each app subkey's `LastUsedTimeStart` / `LastUsedTimeStop`
+  QWORD FILETIME values. It polls once a second and keeps the snapshot only in
+  process memory.
+- It never opens, listens to, records or enumerates audio/video devices. It
+  never reads microphone audio, camera frames, app content, song/event/note
+  text, or anything from a network source for this feature.
+- The only payload is a local Tauri IPC `privacy-state` event carrying the
+  device kind(s) and a friendly app name to the compact bar. There is no file,
+  database, analytics call, upload or third-party request for this feature:
+  nothing leaves the PC.
+- With `FLOAT_DEBUG=1`, raw registry subkey names are logged to the existing
+  local `%APPDATA%\Float\logs\float.log` (same 1 MB cap, never uploaded), so an
+  unmatched app can be diagnosed on this machine.
+
 ## (b) Data inventory — every file or store the app writes
 
 | Store | Path (Windows) | What it holds | Status |
 | --- | --- | --- | --- |
-| `settings.json` | `%APPDATA%\com.float.app.windows\settings.json` (Tauri `app_config_dir()` = config dir + bundle identifier `com.float.app.windows`) | `settingsVersion`, notch toggles / shortcut, `hotkeysEnabled`, `hotkeyNotes`, `hotkeyNext`, `hotkeyPrev`, `notesFolder` override, `calendarAccounts` metadata, `timerCustomTimes`, `timerDurationMs`, `timerLastCustomMs`, `timerSound`. No credentials or tokens. | Implemented (`src-tauri/src/lib.rs`, `settings` module). |
+| `settings.json` | `%APPDATA%\com.float.app.windows\settings.json` (Tauri `app_config_dir()` = config dir + bundle identifier `com.float.app.windows`) | `settingsVersion`, notch toggles / shortcut, `hotkeysEnabled`, `hotkeyNotes`, `hotkeyNext`, `hotkeyPrev`, `notesFolder` override, `calendarAccounts` metadata, `timerCustomTimes`, `timerDurationMs`, `timerLastCustomMs`, `timerSound`, `compactPrivacy`. No credentials or tokens. | Implemented (`src-tauri/src/lib.rs`, `settings` module). |
 | `settings.json.tmp` | Same directory as `settings.json` | Transient atomic-write temp file during `settings_set` / version migration. | Implemented. |
 | Notes folder | `settings.notesFolder` if set, otherwise `Documents\Float Notes` | Markdown note files named `YYYY-MM-DD HH-mm-ss {slug}.md`; first line `# title`, remainder = body. Personal note text. | Default/folder path decided; the file-I/O commands in `src-tauri/src/notes.rs` are currently stubs (Phase 5 work still pending). |
-| Logs | `%APPDATA%\Float\logs\float.log` (pinned by `app > appDirectoriesOverride.log`; rotation keeps one file) | Error-level view-crash lines always (tab name, error message, React component stack). When `FLOAT_DEBUG=1` also startup/trigger/window geometry, media session/title/artist and art diagnostics. Never note bodies, note text or file contents. | Implemented; debug/info off unless `FLOAT_DEBUG=1`, error level always on. |
+| Logs | `%APPDATA%\Float\logs\float.log` (pinned by `app > appDirectoriesOverride.log`; rotation keeps one file) | Error-level view-crash lines always (tab name, error message, React component stack). When `FLOAT_DEBUG=1` also startup/trigger/window geometry, media session/title/artist and art diagnostics, plus raw local mic/camera registry subkey names. Never note bodies, note text or file contents. | Implemented; debug/info off unless `FLOAT_DEBUG=1`, error level always on. |
 | Webview storage | Tauri webview data dir under `%LOCALAPPDATA%\com.float.app.windows\` (localStorage / HTTP cache / IndexedDB) | Only what the webview itself caches; the real app uses Tauri commands, not localStorage. | Runtime-managed by WebView2. |
 | Browser-prototype localStorage | `notch-notes`, `float-mock-notch-settings`, `notch-timer-duration`, `notch-timer-last-custom` | Mock notes (titles/bodies), mock settings, mock timer values. **Browser prototype only** (`VITE_USE_MOCK=1`); the real app does not use these keys. | Implemented (`src/services/mockServices.ts`). |
 | Calendar cache | Planned local ICS cache (`docs/ARCHITECTURE.md`) | Event data fetched directly from the user's own ICS source. | Not implemented; no file written today. No credentials stored by Float. |
@@ -53,7 +71,7 @@ Tauri updater/notification/opener plugins, and remote fonts/images across
 | 1 | `src/App.tsx:78` — CSS `url('https://images.unsplash.com/photo-...')` for the fake desktop wallpaper | HTTP GET for the JPEG, with query params (`crop`, `cs`, `fit`, `fm`, `q`, `w`) and the machine's IP/user agent | images.unsplash.com (Unsplash CDN) | Nothing: always rendered by the prototype `App.tsx`. Previously permitted in Tauri by `img-src ... https:`. | **Violation** (automatic external request / remote image). Proposed removal: replace with a bundled local wallpaper or a CSS gradient. Not removed this session. Now blocked by CSP in the Tauri webview. |
 | 2 | `vite.config.ts:184-205` — `figmaSiteConfiguration()` injects `<script src="https://www.googletagmanager.com/gtag/js?id=...">` plus a `dataLayer`/`gtag('config', ...)` snippet | Page views/events, page URL, IP and user agent | Google Tag Manager / Google Analytics | Only when `analytics.googleAnalyticsId` is set in `.figma/make/site.json`. Currently unset (`site.json` has no analytics key), and `dist/index.html` contains no GA script. | **Dormant violation** (analytics mechanism). Proposed removal: delete the analytics branch entirely. Not removed this session; CSP blocks the external script even if configured. |
 | 3 | Tauri dev HMR (Vite dev server) — `ws://localhost:8443` plus `http://localhost:8443` | Source/HMR messages, no user content | Local Vite dev server on the same PC | `pnpm tauri dev` / `devUrl: http://localhost:8443`. Allowed in `devCsp` only, never in the production `csp`. | Local-only, permitted. |
-| 4 | Tauri IPC — `ipc://localhost` / `http://ipc.localhost` (`invoke`, events, `plugin:log|log`) | Settings, note text, timer state, track metadata, log lines, `hotkeys-status` (registration failures only) | The app's own Rust process on the same PC | Core Tauri capability (`core:default`), always on. | Local-only, permitted. |
+| 4 | Tauri IPC — `ipc://localhost` / `http://ipc.localhost` (`invoke`, events, `plugin:log|log`) | Settings, note text, timer state, track metadata, log lines, `hotkeys-status` (registration failures only), `power-state`, `privacy-state` (device kind(s) + friendly app name only) | The app's own Rust process on the same PC | Core Tauri capability (`core:default`), always on. | Local-only, permitted. |
 | 5 | `src/services/mockServices.ts:75,85` — `https://meet.google.com/notch-review`, `https://teams.microsoft.com/l/meetup-join/notch` stored as calendar `location` strings | Nothing; these are strings, not fetched. A user click would open them via the OS | Google Meet / Teams, only on explicit user action | Mock data only. No `opener` plugin is installed and no `calendar_join` command exists yet. | Not a network call. If wired later, opening must remain an explicit user action. |
 | 6 | `src/components/MusicCard.tsx:206` (`track.artDataUrl`) and `src/live/CompactBar.tsx:50` (`leading.url`) — `<img src=...>` | Nothing external; values are `data:` URLs or locally generated strings | Nobody | Always rendered, but no network fetch. | Permitted. |
 | 7 | Album art in Rust (`src-tauri/src/music.rs`, `Thumbnail()` / `DataReader`) | Reads the local Windows SMTC thumbnail stream into memory, re-encodes to a `data:` URL | Nobody online — no online album-art lookup exists | Active when a media session exposes art. | Permitted; any future online lookup would violate the rules. |

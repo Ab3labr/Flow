@@ -5,6 +5,7 @@ use tauri::Manager;
 mod hotkeys;
 mod music;
 mod power;
+mod privacy_indicator;
 mod timer;
 mod notes;
 mod triggers;
@@ -168,6 +169,10 @@ pub fn run() {
       // AC/battery changes are emitted as `power-state`; startup is silent.
       power::start(app.handle().clone());
 
+      // Mic/camera starts come only from HKCU usage timestamps; startup is a
+      // silent baseline and no audio/video device is ever opened.
+      privacy_indicator::start(app.handle().clone());
+
       // Rebindable global hotkeys are registered on the keyboard-hook message
       // thread below. They call the media/state code paths in Rust directly
       // (no simulated keys).
@@ -245,6 +250,8 @@ mod settings {
     pub compact_recording: bool,
     #[serde(default = "default_true")]
     pub compact_charging: bool,
+    #[serde(default = "default_true")]
+    pub compact_privacy: bool,
     #[serde(default = "default_shortcut")]
     pub shortcut: String,
     #[serde(default = "default_true")]
@@ -273,6 +280,7 @@ mod settings {
         compact_timer: true,
         compact_recording: true,
         compact_charging: true,
+        compact_privacy: true,
         shortcut: default_shortcut(),
         hotkeys_enabled: true,
         hotkey_notes: default_hotkey_notes(),
@@ -403,6 +411,7 @@ mod settings {
       "compactTimer": true,
       "compactRecording": true,
       "compactCharging": true,
+      "compactPrivacy": true,
       "shortcut": "Alt Alt",
       "hotkeysEnabled": true,
       "hotkeyNotes": "Alt+N",
@@ -509,6 +518,7 @@ mod settings {
       assert!(notch.compact_timer);
       assert!(notch.compact_recording);
       assert!(notch.compact_charging);
+      assert!(notch.compact_privacy);
       assert_eq!(notch.shortcut, "Alt Alt");
       assert!(notch.hotkeys_enabled);
       assert_eq!(notch.hotkey_notes, "Alt+N");
@@ -529,6 +539,7 @@ mod settings {
       assert!(notch.compact_timer);
       assert!(notch.compact_recording);
       assert!(notch.compact_charging);
+      assert!(notch.compact_privacy);
       assert_eq!(notch.shortcut, "Ctrl + Shift + Space");
       assert!(notch.hotkeys_enabled);
       assert_eq!(notch.hotkey_notes, "Alt+N");
@@ -558,6 +569,7 @@ mod settings {
       assert!(notch.compact_timer);
       assert!(notch.compact_recording);
       assert!(notch.compact_charging);
+      assert!(notch.compact_privacy);
       assert_eq!(notch.shortcut, "Alt Alt");
       assert!(notch.hotkeys_enabled);
       assert_eq!(notch.hotkey_notes, "Alt+N");
@@ -636,6 +648,7 @@ mod settings {
       assert!(notch.compact_timer);
       assert!(notch.compact_recording);
       assert!(notch.compact_charging);
+      assert!(notch.compact_privacy);
       assert_eq!(notch.shortcut, "Alt Alt");
       assert!(notch.hotkeys_enabled);
       assert_eq!(notch.hotkey_notes, "Alt+N");

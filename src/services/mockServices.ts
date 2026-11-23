@@ -6,6 +6,7 @@ import {
   type Note,
   type NotchSettings,
   type PowerState,
+  type PrivacyState,
   type TimerSnapshot,
   type Track,
 } from "./types";
@@ -106,6 +107,11 @@ export const mediaService = {
   next: async (): Promise<boolean> => false,
   prev: async (): Promise<boolean> => false,
   seek: async (_positionMs: number): Promise<boolean> => false,
+};
+
+/** No device records exist in the browser prototype. */
+export const privacyService = {
+  subscribe: async (_handler: (state: PrivacyState) => void): Promise<() => void> => () => {},
 };
 
 export const calendarService = {

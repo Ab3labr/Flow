@@ -53,6 +53,21 @@ Global shortcuts
   Startup state is also available through the `hotkeys_status` command for
   listeners that mounted after the initial emit.
 
+Mic/camera indicator
+- Read only the HKCU CapabilityAccessManager `microphone` / `webcam` usage
+  timestamps. Float never opens an audio/video device, never captures media,
+  and never asks for admin rights. The snapshot lives only in process memory
+  and the only payload is the local `privacy-state` Tauri event.
+- Use the existing `windows` crate with its `Win32_System_Registry` feature for
+  read-only `RegOpenKeyExW` / `RegEnumKeyExW` / `RegQueryValueExW`. Adding
+  `winreg` would duplicate an already-present dependency for the same Win32
+  API. Justification recorded below under Dependency justifications.
+- Startup is a silent baseline; later polls fire only on a new/changed
+  `LastUsedTimeStart` with `start > stop`. Keep a 30 s per-app/per-kind
+  cooldown and join mic+camera starts within 1 s into one event.
+- `compactPrivacy` defaults on, follows the `compactBar` master toggle, and is
+  suppressed while the full panel is open.
+
 ## Privacy decisions (permanent owner decision)
 
 - Free, easy to use and private forever. No Float-owned server or database,
@@ -63,7 +78,10 @@ Global shortcuts
   nothing uploaded without a user action. No third-party calls that carry
   song titles, event titles, note text or other personal content; in
   particular online album-art lookups are forbidden. SMTC thumbnail art is
-  read from the local Windows session only.
+  read from the local Windows session only. The mic/camera indicator reads only
+  local HKCU usage timestamps (which app started using a device and when);
+  no app content, audio, video or device list is read, and no outbound request
+  is added. Nothing leaves the PC.
 - Webview CSP is allow-list only: Tauri IPC plus the local Vite dev server
   in `devCsp`; no remote fonts, images, scripts, frames or fetches in the
   production `csp`. Inter is bundled locally (`@fontsource-variable/inter`).
@@ -87,6 +105,12 @@ Backend
   before base64, so the `media-state` event stays small; the extra decoders let
   GIF/BMP/WebP art be sniffed by magic bytes and normalised to JPEG (unknown
   bytes fall back to PNG).
+- windows `Win32_System_Registry` feature (no new crate): read-only
+  `RegOpenKeyExW` / `RegEnumKeyExW` / `RegQueryValueExW` over the HKCU
+  CapabilityAccessManager usage records for the mic/camera indicator. `windows`
+  0.62 is already required for the shell, SMTC, power and hotkeys; `winreg`
+  would add a second registry wrapper for the same OS calls. No admin rights,
+  no device access, no network.
 
 Frontend
 - @fontsource-variable/inter: bundle Inter locally (no remote font import,

@@ -1,5 +1,5 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Battery, CalendarDays, Clock, Mic, Music, Pause, Timer, Zap } from "lucide-react";
+import { Battery, CalendarDays, Camera, Clock, Mic, Music, Pause, Timer, Zap } from "lucide-react";
 import { useCallback, useLayoutEffect, useRef } from "react";
 import { Equalizer } from "./Equalizer";
 import {
@@ -24,6 +24,8 @@ const RING_CIRCUMFERENCE = 2 * Math.PI * 6;
 const LEADING_ICONS: Record<string, typeof Music> = {
   music: Music,
   recording: Mic,
+  mic: Mic,
+  camera: Camera,
   timer: Timer,
   "timer-done": Timer,
   meeting: CalendarDays,
@@ -83,6 +85,23 @@ function Leading({
           className="relative h-2.5 w-2.5 rounded-full"
           style={{ backgroundColor: leading.color }}
         />
+      </span>
+    );
+  }
+  if (leading.type === "icons") {
+    return (
+      <span className="flex h-5 w-5 shrink-0 items-center justify-center gap-0.5 rounded-[6px] bg-white/10">
+        {leading.icons.map((icon, index) => {
+          const Icon = LEADING_ICONS[icon.name.toLowerCase()] ?? Music;
+          return (
+            <Icon
+              key={`${icon.name}-${index}`}
+              className="h-2.5 w-2.5"
+              style={{ color: icon.color }}
+              strokeWidth={1.8}
+            />
+          );
+        })}
       </span>
     );
   }
@@ -154,7 +173,7 @@ function Trailing({
   if (typeof trailing === "object") {
     return (
       <span
-        className="shrink-0 text-[11px] font-medium tabular-nums"
+        className="min-w-0 truncate text-[11px] font-medium tabular-nums"
         style={{ color: trailing.color }}
       >
         {trailing.value}
