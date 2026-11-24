@@ -188,6 +188,13 @@ export function Notch() {
   }, []);
   const changeTab = useCallback((next: TabId) => {
     if (tabRef.current === "notes" && next !== "notes") void notesFlushRef.current();
+    // A tab click is an explicit interaction, not a transient hover. Without
+    // this, a pending hover-close can win while Motion is changing the panel
+    // height, which makes the notch look as if it closed on a tab switch.
+    if (expandedRef.current) {
+      window.clearTimeout(leaveTimer.current);
+      setPinned(true);
+    }
     setTab(next);
   }, []);
   const settingsRef = useRef<NotchSettings>(DEFAULT_NOTCH_SETTINGS);

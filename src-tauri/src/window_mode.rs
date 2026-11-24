@@ -382,6 +382,27 @@ pub struct ApplyOutcome {
   pub ignore_cursor: bool,
 }
 
+/// Whether the native window must ignore pointer input for a given plan.
+///
+/// Open-to-open transitions only resize the current panel (for example,
+/// switching from Home to Calendar). Keeping these interactive prevents the
+/// Windows mouse hook from treating the user's tab click as an outside click
+/// while the frontend animation is settling. Transitions to or from a
+/// compact/idle surface remain click-through to avoid a transparent window
+/// intercepting desktop clicks.
+fn window_input_flags(mode: UiMode, phase: UiPhase, logical_open: bool) -> (bool, bool) {
+  match phase {
+    UiPhase::Stable => match mode {
+      UiMode::Idle => (true, false),
+      UiMode::Pill | UiMode::Open => (false, true),
+    },
+    UiPhase::Expanding | UiPhase::Collapsing if mode == UiMode::Open && logical_open => {
+      (false, true)
+    }
+    UiPhase::Expanding | UiPhase::Collapsing => (true, mode != UiMode::Idle),
+  }
+}
+
 /// Applies `mode` to the window, anchored to the monitor under the cursor.
 /// Also records open/pinned + the panel rect for the trigger hooks.
 pub fn apply(
@@ -425,15 +446,7 @@ pub fn apply(
     monitor.scale_factor(),
   );
 
-  // During a morph the source window is held and made click-through, so no
-  // large transparent rectangle steals clicks from the desktop behind it.
-  let (ignore_cursor, visible) = match phase {
-    UiPhase::Stable => match mode {
-      UiMode::Idle => (true, false),
-      UiMode::Pill | UiMode::Open => (false, true),
-    },
-    UiPhase::Expanding | UiPhase::Collapsing => (true, mode != UiMode::Idle),
-  };
+  let (ignore_cursor, visible) = window_input_flags(mode, phase, open);
   let pinned_state = if open {
     if phase == UiPhase::Stable {
       pinned
@@ -812,6 +825,23 @@ mod tests {
     assert_eq!(UiPhase::parse(Some("expanding")), UiPhase::Expanding);
     assert_eq!(UiPhase::parse(Some("collapsing")), UiPhase::Collapsing);
     assert_eq!(UiPhase::parse(Some("unknown")), UiPhase::Stable);
+  }
+
+  #[test]
+  fn open_to_open_morph_stays_interactive() {
+    assert_eq!(
+      window_input_flags(UiMode::Open, UiPhase::Expanding, true),
+      (false, true)
+    );
+    assert_eq!(
+      window_input_flags(UiMode::Open, UiPhase::Collapsing, true),
+      (false, true)
+    );
+    // A real close transition remains click-through until the animation ends.
+    assert_eq!(
+      window_input_flags(UiMode::Open, UiPhase::Collapsing, false),
+      (true, true)
+    );
   }
 
   #[test]

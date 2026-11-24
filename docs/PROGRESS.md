@@ -284,6 +284,17 @@ not started / in progress / done / blocked
       The session pointers, open rule and reveal/folder commands are ready
       for the real file store when it lands.
 
+## Native tab-switch stability (2026-11-24)
+- [x] Fixed a native-window interaction race where an open-to-open panel
+      height morph temporarily made Float click-through. Tab switches now
+      remain interactive throughout the resize, while transitions to compact
+      or idle remain click-through so transparent window space cannot capture
+      desktop clicks.
+- [x] A deliberate tab selection now clears a pending hover-close and pins the
+      panel, preventing a hover-opened panel from disappearing while the user
+      is switching features. Added a Rust regression test for the native
+      input policy.
+
 ## Notes crash re-check (2026-11-24)
 - [x] Re-verified the existing `ErrorBoundary` wraps every tab (`Home`, `Timer`,
       `Calendar`, `Notes`, `Capture`, `Settings`), keeps the Notes panel at the
