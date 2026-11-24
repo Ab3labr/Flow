@@ -47,6 +47,7 @@ dom.window.matchMedia =
 type NotesViewModule = typeof import("./NotesView");
 type ErrorBoundaryModule = typeof import("./ErrorBoundary");
 type ServicesModule = typeof import("../services/index");
+type SessionModule = typeof import("../notes/noteSession");
 type ReactModule = typeof import("react");
 type ClientModule = typeof import("react-dom/client");
 
@@ -54,6 +55,7 @@ let vite: ViteDevServer;
 let NotesView: NotesViewModule["NotesView"];
 let ErrorBoundary: ErrorBoundaryModule["ErrorBoundary"];
 let services: ServicesModule;
+let createNoteSession: SessionModule["createNoteSession"];
 let React: ReactModule;
 let client: ClientModule;
 let originalList: ServicesModule["noteService"]["list"];
@@ -73,6 +75,9 @@ before(async () => {
     "/src/components/ErrorBoundary.tsx",
   ) as ErrorBoundaryModule);
   services = await vite.ssrLoadModule("/src/services/index.ts") as ServicesModule;
+  ({ createNoteSession } = await vite.ssrLoadModule(
+    "/src/notes/noteSession.ts",
+  ) as SessionModule);
   React = await import("react");
   client = await import("react-dom/client");
   originalList = services.noteService.list;
@@ -83,21 +88,32 @@ after(async () => {
   await vite?.close();
 });
 
-async function mount() {
+function makeSession() {
+  return createNoteSession({
+    getSettings: () => ({
+      notesLastId: null,
+      notesLastEditedMs: 0,
+      notesNewAfterMinutes: 720,
+    }),
+    persist: () => undefined,
+  });
+}
+
+async function mount(session = makeSession()) {
   const container = dom.window.document.createElement("div");
   dom.window.document.body.appendChild(container);
   const root = client.createRoot(container);
   await React.act(async () => {
     root.render(
       React.createElement(NotesView, {
-        newNoteRequest: 0,
+        session,
         onHeightChange: () => undefined,
-        onRequestHandled: () => undefined,
       }),
     );
   });
   return {
     container,
+    session,
     unmount: async () => {
       await React.act(async () => root.unmount());
       container.remove();
@@ -166,6 +182,57 @@ test("NotesView survives corrupt mock note storage", async () => {
   } finally {
     await view.unmount();
     dom.window.localStorage.removeItem("notch-notes");
+  }
+});
+
+test("NotesView renders from the session and keeps text across remounts", async () => {
+  services.noteService.list = () => [];
+  let savedId: string | null = null;
+  const session = createNoteSession({
+    getSettings: () => ({
+      notesLastId: null,
+      notesLastEditedMs: 0,
+      notesNewAfterMinutes: 720,
+    }),
+    persist: (id) => {
+      savedId = id;
+    },
+    service: {
+      get: () => undefined,
+      save: async (id, _title, _body) => {
+        const nextId = id ?? "note-draft";
+        savedId = nextId;
+        return { id: nextId, modifiedMs: 123 };
+      },
+    },
+    autosaveMs: 60_000,
+  });
+
+  const first = await mount(session);
+  try {
+    await React.act(async () => {
+      session.update({ body: "Typed text survives a tab switch" });
+    });
+    assert.equal(
+      first.container.querySelector("textarea")?.value,
+      "Typed text survives a tab switch",
+    );
+    await React.act(async () => {
+      await session.flush();
+    });
+    assert.equal(savedId, "note-draft");
+  } finally {
+    await first.unmount();
+  }
+
+  const second = await mount(session);
+  try {
+    assert.equal(
+      second.container.querySelector("textarea")?.value,
+      "Typed text survives a tab switch",
+    );
+  } finally {
+    await second.unmount();
   }
 });
 

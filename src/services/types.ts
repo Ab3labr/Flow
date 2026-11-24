@@ -100,6 +100,12 @@ export type NotchSettings = {
   hotkeyNotes: string;
   hotkeyNext: string;
   hotkeyPrev: string;
+  /** Minutes before Notes opens a fresh draft; 0 = never. */
+  notesNewAfterMinutes: number;
+  /** Last note shown, used to reopen it after a restart. */
+  notesLastId: string | null;
+  /** Last edit timestamp for `notesLastId`. */
+  notesLastEditedMs: number;
 };
 
 export const DEFAULT_NOTCH_SETTINGS: NotchSettings = {
@@ -120,4 +126,7 @@ export const DEFAULT_NOTCH_SETTINGS: NotchSettings = {
   hotkeyNotes: "Alt+N",
   hotkeyNext: "Alt+C",
   hotkeyPrev: "Alt+Z",
+  notesNewAfterMinutes: 720,
+  notesLastId: null,
+  notesLastEditedMs: 0,
 };

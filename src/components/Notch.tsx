@@ -47,6 +47,7 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { EventCard, JoinButton } from "./EventCard";
 import { MusicCard } from "./MusicCard";
 import { NotesView } from "./NotesView";
+import { useNoteSession } from "./useNoteSession";
 import { SettingsView } from "./SettingsView";
 import { TimerView } from "./TimerView";
 import { PressButton, TabId, TopBar } from "./TopBar";
@@ -161,8 +162,6 @@ export function Notch() {
   const [recording, setRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [notesHeight, setNotesHeight] = useState(172);
-  const [newNoteRequest, setNewNoteRequest] = useState(0);
-  const [notesFlushRequest, setNotesFlushRequest] = useState(0);
   const [hotkeyFailures, setHotkeyFailures] = useState<HotkeyFailures>({
     notes: null,
     next: null,
@@ -171,6 +170,7 @@ export function Notch() {
   const [accounts, setAccounts] = useState<CalendarAccount[]>(calendarService.getDefaultAccounts);
   const [meetingActivity, setMeetingActivity] = useState<LiveActivity | null>(null);
   const [settings, setSettings] = useState<NotchSettings>(DEFAULT_NOTCH_SETTINGS);
+  const [settingsReady, setSettingsReady] = useState(false);
   const hoverTimer = useRef<number | undefined>(undefined);
   const leaveTimer = useRef<number | undefined>(undefined);
   const focusTimer = useRef<number | undefined>(undefined);
@@ -182,6 +182,9 @@ export function Notch() {
   const notesFlushRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const registerNotesFlush = useCallback((flush: () => Promise<void>) => {
     notesFlushRef.current = flush;
+  }, []);
+  const setNotesPanelHeight = useCallback((height: number) => {
+    setNotesHeight(Math.max(172, Math.min(340, height)));
   }, []);
   const changeTab = useCallback((next: TabId) => {
     if (tabRef.current === "notes" && next !== "notes") void notesFlushRef.current();
@@ -336,9 +339,11 @@ export function Notch() {
         if (cancelled) return;
         settingsRef.current = loaded;
         setSettings(loaded);
+        setSettingsReady(true);
       })
       .catch((error) => {
         console.error("failed to load settings", error);
+        if (!cancelled) setSettingsReady(true);
       });
     return () => {
       cancelled = true;
@@ -412,6 +417,27 @@ export function Notch() {
       setSettings(previous);
     });
   }, []);
+
+  // Session pointers live in settings.json so the same note reopens after a
+  // restart. The session itself (text, queue, caret, scroll) lives above tabs.
+  const persistNoteSession = useCallback(
+    (lastId: string | null, lastEditedMs: number) => {
+      const current = settingsRef.current;
+      if (current.notesLastId === lastId && current.notesLastEditedMs === lastEditedMs) return;
+      updateSettings({ ...current, notesLastId: lastId, notesLastEditedMs: lastEditedMs });
+    },
+    [updateSettings],
+  );
+  const noteSession = useNoteSession({
+    getSettings: () => settingsRef.current,
+    persist: persistNoteSession,
+  });
+
+  // Opening/reopening Notes applies the "last note vs fresh draft" rule.
+  useEffect(() => {
+    if (!settingsReady || !expanded || tab !== "notes") return;
+    void noteSession.openForTab();
+  }, [expanded, tab, settingsReady, noteSession]);
 
   // Music activity: only `isMusicApp` sessions register, and only while
   // playing; a pause keeps it (flat bars) for 3 s so the bar does not flicker
@@ -653,8 +679,8 @@ export function Notch() {
   }, []);
 
   // Global Alt+N is a toggle with one destination: Notes. A closed panel opens
-  // pinned on a fresh draft; an open Notes tab flushes and closes; any other
-  // open tab switches to Notes with a fresh draft.
+  // pinned on the note chosen by the open rule; an open Notes tab flushes and
+  // closes; any other open tab switches to Notes. It never creates a note.
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
@@ -670,7 +696,6 @@ export function Notch() {
       setPinned(pinned);
       setExpanded(true);
       setTab("notes");
-      setNewNoteRequest((value) => value + 1);
       window.clearTimeout(focusTimer.current);
       focusTimer.current = window.setTimeout(focusNotchWindow, 80);
     }).then((stop) => {
@@ -969,7 +994,7 @@ export function Notch() {
 
   const openNewNote = () => {
     changeTab("notes");
-    setNewNoteRequest((request) => request + 1);
+    void noteSession.startNewNote();
   };
 
   const connectCalendar = (provider: CalendarProvider) => {
@@ -1060,12 +1085,11 @@ export function Notch() {
       <ErrorBoundary
         tab="Notes"
         showOpenNotesFolder
-        onHeightChange={(height) => setNotesHeight(Math.max(172, Math.min(340, height)))}
+        onHeightChange={setNotesPanelHeight}
       >
         <NotesView
-          newNoteRequest={newNoteRequest}
-          onHeightChange={(height) => setNotesHeight(Math.max(172, Math.min(340, height)))}
-          onRequestHandled={() => setNewNoteRequest(0)}
+          session={noteSession}
+          onHeightChange={setNotesPanelHeight}
           onFlushReady={registerNotesFlush}
         />
       </ErrorBoundary>

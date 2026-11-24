@@ -83,9 +83,10 @@ timers. Timer state comes from `useTimer()` (see TimerView).
   120–340; panel height = card + 52 clamped 172–340.
 - Title 14px semibold (placeholder "Start typing…"); textarea 13px
   leading-1.5 white/75, min-h-42px, auto-grow.
-- Footer `h-6 border-t white/5`: "Saved" check; "Saving..." if a save takes
-  longer than 400 ms; "Couldn't save" in red (#ff453a) if it fails (keeps text
-  in editor and retries on next change).
+- Footer `h-6 border-t white/5`: "Saved" check (a small button; see
+  Session below); "Saving..." if a save takes longer than 400 ms; "Couldn't
+  save" in red (#ff453a) if it fails (keeps text in editor and retries on next
+  change); "Too large" in red when a paste would exceed 2 MB.
 - Autosave: **600 ms** after last keystroke. A pending save must be flushed
   **IMMEDIATELY** (not debounced) when: the user switches tab; the panel
   closes or collapses (Esc, outside click, hover-close, double-Alt); the
@@ -93,39 +94,60 @@ timers. Timer state comes from `useTimer()` (see TimerView).
   note; and on "flush-request" from Rust (then emit "flush-done" from frontend).
 - Never create files for empty drafts; two quick edits produce one queued save.
 - Serializes save: never run two saves for the same note at once.
+- A paste goes through the same autosave path as typing. A ~500 KB paste is
+  accepted without a layout loop; over **2 MB** the paste is rejected with
+  "Too large" and is not saved.
+
+### Session and reopen rule (2026-11-24)
+- The current note (id, title, body, dirty flag, caret, scroll, save queue)
+  lives in a session store in `Notch`, not in `NotesView`. Closing the panel
+  or changing tabs unmounts only the editor; typed or pasted text never
+  disappears.
+- Reopening Notes shows the same note, scroll position and caret at the end,
+  unless:
+  - the last edit was more than `notesNewAfterMinutes` ago (default **720**,
+    `0` = never), in which case a fresh blank draft opens and the old note
+    stays saved in the recent list; or
+  - the user pressed **New note**.
+- `chooseNoteOnOpen(nowMs, lastEditedMs, lastId, fileExists, newAfterMinutes,
+  newNotePressed)` is the pure rule; it also returns a fresh draft when the
+  remembered file no longer exists.
+- Across restarts `notesLastId` and `notesLastEditedMs` persist in
+  `settings.json`; a missing file opens a fresh draft.
+- Alt+N and the Notes tab open the **current** note via the rule above. They
+  never create a note. Only the idle-home "New note" chip and the footer "+"
+  button create a note. A fresh blank note stays a draft with no file until it
+  has content.
 
 ### Recent list popover (hover-over-grid)
 - Top 5 from `list(5)`, with the title ("Untitled note" if empty) and time ago.
 - Clicking opens that note (flush the current one first).
 - Hover shows a trash icon that calls `remove()` (Recycle Bin).
-- If the open note is deleted, switch to a new draft.
+- If the open note is deleted, its text stays as a new draft so nothing typed
+  is lost.
+- Footer link "Open notes folder" calls `notes_open_folder`.
 
 ### New note
 - "New note" creates an in-memory draft with no file. The first save with
   non-empty content creates the file (Rust returns the id); use that id for
   later saves.
-- The idle home "New note" chip opens a fresh draft and focuses the title.
+- The idle-home "New note" chip and the Notes footer "+" both call the same
+  session `startNewNote` path and focus the title. Alt+N never creates one.
 
 ### Folder path
-- Replace "Documents\Notch Notes" text with the real path from `folderPath()`.
-
-### Recent list
-- Top 5 from `list(5)`, with the title ("Untitled note" if empty) and time ago.
-- Clicking opens that note (flush the current one first).
-- Hover shows a trash icon that calls `remove()` (Recycle Bin).
-- If the open note is deleted, switch to a new draft.
-
-### Recent list popover details
-- Top 5 from `list(5)`, with the title ("Untitled note" if empty) and time ago.
-- Clicking opens that note (flush the current one first).
-- Hover shows a trash icon that calls `remove()` (Recycle Bin).
-- If the open note is deleted, switch to a new draft.
+- The Settings "Notes folder" row shows the real full path from
+  `notes_folder_path` (middle ellipsis if long, full path in the tooltip).
+- "Open folder" calls `notes_open_folder` (create the folder if missing, then
+  Explorer). The recent popover has the same action.
 
 ### Footer indicator
-- A checkmark after a successful save.
+- "Saved" is a small button after a successful save. Its tooltip is the file
+  name; clicking calls `notes_reveal(id)` to open Explorer with that file
+  selected. Drafts with no file are disabled.
 - "Saving..." only if a save takes longer than 400 ms.
 - "Couldn't save" in red (#ff453a) if it fails (log the error; keeps the text
   in the editor and retries on the next change).
+- "Too large" in red when the note would exceed 2 MB; it is not saved.
 
 ### Autosave
 - **600 ms** after last keystroke.
@@ -138,9 +160,8 @@ timers. Timer state comes from `useTimer()` (see TimerView).
 - Never create files for empty drafts
 - Two quick edits produce one queued save
 - Serializes saves: never run two saves for the same note at once
-
-### Folder path
-- Replace "Documents\Notch Notes" text with the real path from `folderPath()`.
+- A paste uses the same autosave path. ~500 KB is accepted; over 2 MB is
+  rejected with "Too large" and not saved.
 
 ## Panel open/close (Notch.tsx)
 

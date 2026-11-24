@@ -246,6 +246,44 @@ not started / in progress / done / blocked
       fields, plus an ErrorBoundary fallback test. `pnpm test` ✓ 34 passing;
       `pnpm exec tsc --noEmit` ✓ 0 errors; `pnpm build` ✓.
 
+## Notes session persistence + findability (2026-11-24)
+- [x] Moved the editing state out of `NotesView` into a React-free session
+      store (`src/notes/noteSession.ts`) created once in `Notch`
+      (`useNoteSession`). Id, title, body, dirty flag, caret, scroll and the
+      serialized save queue survive tab switches, panel closes and remounts.
+- [x] Added the pure `chooseNoteOnOpen(nowMs, lastEditedMs, lastId,
+      fileExists, newAfterMinutes, newNotePressed)` rule plus
+      `src/notes/chooseNoteOnOpen.test.ts` (recent, old, missing file,
+      `0` = never, New note pressed).
+- [x] Reopening Notes keeps the current note/scroll and puts the caret at the
+      end unless the edit is older than `notesNewAfterMinutes` (default 720)
+      or New note was pressed. The old note stays saved in the recent list.
+- [x] Added `notesNewAfterMinutes` (default 720), `notesLastId` and
+      `notesLastEditedMs` to `NotchSettings`/`DEFAULT_SETTINGS` with
+      `#[serde(default)]` in Rust, so settings survive restarts and older
+      files keep loading.
+- [x] Alt+N and the Notes tab open the current note; only the idle-home
+      "New note" chip and the Notes footer "+" create a draft. A blank draft
+      stays in memory until it has content.
+- [x] Pasting uses the normal autosave path. The 2 MB ceiling is checked with
+      a fast character-count gate before encoding; over-size pastes are
+      rejected with "Too large" and never saved.
+- [x] Added `notes_reveal(id)` (path-safe id, `explorer.exe /select,<file>`),
+      wired the footer "Saved" check to it with the file name as tooltip, and
+      added "Open notes folder" to the recent popover.
+- [x] Settings "Notes folder" now shows the real path from
+      `notes_folder_path` with middle ellipsis and the full path in the
+      tooltip; "Open folder" calls `notes_open_folder`. Both commands now
+      resolve the Documents folder (or the settings override) instead of
+      returning a placeholder.
+- [x] Verification: `pnpm test` ✓ 50 passing, `pnpm exec tsc --noEmit` ✓,
+      `pnpm build` ✓, `cargo check` ✓ (pre-existing notes.rs stub warnings
+      only), `cargo test` ✓ 130 passing.
+- [ ] Pre-existing limitation, unchanged by this task: the file read/write/
+      list/delete bodies in `src-tauri/src/notes.rs` are still Phase 5 stubs.
+      The session pointers, open rule and reveal/folder commands are ready
+      for the real file store when it lands.
+
 ## Notes crash re-check (2026-11-24)
 - [x] Re-verified the existing `ErrorBoundary` wraps every tab (`Home`, `Timer`,
       `Calendar`, `Notes`, `Capture`, `Settings`), keeps the Notes panel at the

@@ -38,6 +38,7 @@ pub fn run() {
       notes::notes_delete,
       notes::notes_open_folder,
       notes::notes_folder_path,
+      notes::notes_reveal,
       hotkeys_status,
       fullscreen_active
     ])
@@ -222,6 +223,10 @@ mod settings {
     "Alt+Z".to_string()
   }
 
+  fn default_notes_new_after_minutes() -> u32 {
+    720
+  }
+
   /// Shared with the frontend: the same camelCase names, and every
   /// `#[serde(default)]` below keeps a partial settings.json usable. Old keys
   /// from earlier versions ("fullscreen", "launch") are simply ignored.
@@ -262,6 +267,15 @@ mod settings {
     pub hotkey_next: String,
     #[serde(default = "default_hotkey_prev")]
     pub hotkey_prev: String,
+    /// Minutes before Notes opens a fresh draft; 0 = never.
+    #[serde(default = "default_notes_new_after_minutes")]
+    pub notes_new_after_minutes: u32,
+    /// Last note shown, used to reopen it after a restart.
+    #[serde(default)]
+    pub notes_last_id: Option<String>,
+    /// Last edit timestamp for `notes_last_id`.
+    #[serde(default)]
+    pub notes_last_edited_ms: u64,
   }
 
   /// Must agree with the serde defaults above: `#[derive(Default)]` would turn
@@ -286,6 +300,9 @@ mod settings {
         hotkey_notes: default_hotkey_notes(),
         hotkey_next: default_hotkey_next(),
         hotkey_prev: default_hotkey_prev(),
+        notes_new_after_minutes: default_notes_new_after_minutes(),
+        notes_last_id: None,
+        notes_last_edited_ms: 0,
       }
     }
   }
@@ -416,7 +433,10 @@ mod settings {
       "hotkeysEnabled": true,
       "hotkeyNotes": "Alt+N",
       "hotkeyNext": "Alt+C",
-      "hotkeyPrev": "Alt+Z"
+      "hotkeyPrev": "Alt+Z",
+      "notesNewAfterMinutes": 720,
+      "notesLastId": null,
+      "notesLastEditedMs": 0
     },
     "notesFolder": null,
     "calendarAccounts": [],
@@ -524,6 +544,9 @@ mod settings {
       assert_eq!(notch.hotkey_notes, "Alt+N");
       assert_eq!(notch.hotkey_next, "Alt+C");
       assert_eq!(notch.hotkey_prev, "Alt+Z");
+      assert_eq!(notch.notes_new_after_minutes, 720);
+      assert_eq!(notch.notes_last_id, None);
+      assert_eq!(notch.notes_last_edited_ms, 0);
     }
 
     #[test]
@@ -575,6 +598,9 @@ mod settings {
       assert_eq!(notch.hotkey_notes, "Alt+N");
       assert_eq!(notch.hotkey_next, "Alt+C");
       assert_eq!(notch.hotkey_prev, "Alt+Z");
+      assert_eq!(notch.notes_new_after_minutes, 720);
+      assert_eq!(notch.notes_last_id, None);
+      assert_eq!(notch.notes_last_edited_ms, 0);
     }
 
     #[test]

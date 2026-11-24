@@ -324,6 +324,13 @@ export const notesService = {
     }
     await invoke<void>("notes_open_folder");
   },
+  /** Real mode: reveal one note with Explorer's selection. */
+  reveal: async (id: string): Promise<void> => {
+    if (import.meta.env.VITE_USE_MOCK) {
+      return;
+    }
+    await invoke<void>("notes_reveal", { id });
+  },
   /** Real mode: get the notes folder path. */
   folderPath: async (): Promise<string> => {
     if (import.meta.env.VITE_USE_MOCK) {

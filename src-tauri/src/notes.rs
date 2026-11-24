@@ -1,6 +1,7 @@
-//! Pure notes functions (no Tauri, no file I/O).
+//! Notes helpers and Tauri commands.
 
-use std::path::Path;
+use std::path::PathBuf;
+use tauri::Manager;
 
 /// A parsed note: title is the first non-empty line (with leading "#"
 /// characters and spaces stripped), body is everything after it.
@@ -155,6 +156,27 @@ pub fn notes_dir(settings_notes_folder: Option<String>) -> String {
   }
 }
 
+/// Absolute notes folder: an explicit override, or Documents\Float Notes.
+pub fn resolve_notes_dir(
+  app: &tauri::AppHandle,
+  settings_notes_folder: Option<String>,
+) -> Result<PathBuf, String> {
+  if let Some(folder) = settings_notes_folder {
+    return Ok(PathBuf::from(folder));
+  }
+  let documents = app.path().document_dir().map_err(|error| error.to_string())?;
+  Ok(documents.join("Float Notes"))
+}
+
+/// Note ids are file names: reject separators, traversal, drive prefixes and
+/// characters Windows cannot store.
+pub fn valid_note_id(id: &str) -> bool {
+  !id.is_empty()
+    && id == sanitise_id(id)
+    && !id.contains(':')
+    && !id.chars().any(|c| c.is_control() || matches!(c, '*' | '?' | '"' | '<' | '>' | '|'))
+}
+
 /// List notes (limited to default 5, newest first).
 /// Returns {id, title, modifiedMs}.
 #[tauri::command]
@@ -190,14 +212,58 @@ pub fn notes_delete(_id: String) -> Result<(), String> {
 
 /// Open the notes folder: create if needed, then run explorer.exe with the path.
 #[tauri::command]
-pub fn notes_open_folder() -> Result<(), String> {
-  Ok(())
+pub fn notes_open_folder(app: tauri::AppHandle) -> Result<(), String> {
+  let settings = crate::settings::load_or_default(&app);
+  let dir = resolve_notes_dir(&app, settings.notes_folder)?;
+  std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+
+  #[cfg(windows)]
+  {
+    std::process::Command::new("explorer.exe")
+      .arg(&dir)
+      .spawn()
+      .map_err(|error| error.to_string())?;
+    Ok(())
+  }
+  #[cfg(not(windows))]
+  {
+    let _ = dir;
+    Ok(())
+  }
+}
+
+/// Reveal one note in Explorer with the file selected.
+#[tauri::command]
+pub fn notes_reveal(app: tauri::AppHandle, id: String) -> Result<(), String> {
+  if !valid_note_id(&id) {
+    return Err("Invalid note id".to_string());
+  }
+
+  let settings = crate::settings::load_or_default(&app);
+  let dir = resolve_notes_dir(&app, settings.notes_folder)?;
+  let path = dir.join(&id);
+
+  #[cfg(windows)]
+  {
+    std::process::Command::new("explorer.exe")
+      .arg(format!("/select,{}", path.display()))
+      .spawn()
+      .map_err(|error| error.to_string())?;
+    Ok(())
+  }
+  #[cfg(not(windows))]
+  {
+    let _ = path;
+    Err("Not supported on this platform".to_string())
+  }
 }
 
 /// Get the notes folder path.
 #[tauri::command]
-pub fn notes_folder_path() -> Result<String, String> {
-  Ok("Documents/Float Notes".to_string())
+pub fn notes_folder_path(app: tauri::AppHandle) -> Result<String, String> {
+  let settings = crate::settings::load_or_default(&app);
+  let dir = resolve_notes_dir(&app, settings.notes_folder)?;
+  Ok(dir.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -314,5 +380,14 @@ mod tests {
   #[test]
   fn slugify_trailing_dots_trimmed() {
     assert_eq!(slugify("..hello.."), "hello");
+  }
+
+  #[test]
+  fn reveal_rejects_unsafe_ids() {
+    assert!(valid_note_id("2026-11-24 10-00-00 Note.md"));
+    assert!(!valid_note_id(""));
+    assert!(!valid_note_id("../secret.md"));
+    assert!(!valid_note_id("C:\\secret.md"));
+    assert!(!valid_note_id("sub/note.md"));
   }
 }

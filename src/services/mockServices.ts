@@ -462,6 +462,10 @@ export const noteService = {
   remove: (id: string) => {
     writeNotes(readNotes().filter((note) => note.id !== id));
   },
+  /** Browser prototype: no shell integration. */
+  reveal: (_id: string) => undefined,
+  openFolder: () => undefined,
+  folderPath: () => "Documents/Float Notes",
 };
 
 const MOCK_SETTINGS_KEY = "float-mock-notch-settings";

@@ -1,7 +1,7 @@
 import { Plus } from "lucide-react";
 import { motion } from "motion/react";
-import { useState, type KeyboardEvent } from "react";
-import { CalendarAccount, CalendarProvider, type NotchSettings } from "../services";
+import { useEffect, useState, type KeyboardEvent } from "react";
+import { CalendarAccount, CalendarProvider, noteService, type NotchSettings } from "../services";
 import { isMockMode } from "../services/env";
 import {
   formatPressedKey,
@@ -13,6 +13,13 @@ import type { HotkeyFailures } from "../services/uiService";
 import { CalendarAccountRow, CalendarConnectSheet } from "./CalendarConnect";
 
 export type { NotchSettings };
+
+/** Keep both ends of a long path readable in a narrow row. */
+export function middleEllipsis(value: string, max = 42): string {
+  if (value.length <= max) return value;
+  const keep = Math.floor((max - 1) / 2);
+  return `${value.slice(0, keep)}…${value.slice(-keep)}`;
+}
 
 function Toggle({ value: on, onChange }: { value: boolean; onChange: () => void }) {
   return (
@@ -106,6 +113,7 @@ export function SettingsView({
   onReconnect: (id: string) => void;
 }) {
   const [connectOpen, setConnectOpen] = useState(false);
+  const [notesFolder, setNotesFolder] = useState<string | null>(null);
   const [captureErrors, setCaptureErrors] = useState<
     Partial<Record<ShortcutField | "shortcut", string>>
   >({});
@@ -133,6 +141,27 @@ export function SettingsView({
     { key: "compactCharging", label: "Charging" },
     { key: "compactPrivacy", label: "Mic & camera" },
   ];
+
+  // Show the real folder path; the tooltip keeps the full value readable.
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.resolve(noteService.folderPath?.())
+      .then((path) => {
+        if (!cancelled && typeof path === "string" && path) setNotesFolder(path);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const openNotesFolder = () => {
+    try {
+      void Promise.resolve(noteService.openFolder?.()).catch(() => undefined);
+    } catch {
+      // Ignore shell failures; settings stays usable.
+    }
+  };
 
   const setCaptureError = (field: ShortcutField | "shortcut", message: string | null) => {
     setCaptureErrors((current) => ({ ...current, [field]: message ?? undefined }));
@@ -321,9 +350,17 @@ export function SettingsView({
         <div className="mt-2 flex h-9 items-center justify-between rounded-xl bg-[#121212] px-2.5">
           <div className="min-w-0">
             <p className="text-[11px] text-white/80">Notes folder</p>
-            <p className="truncate text-[11px] text-white/40">Documents\Notch Notes</p>
+            <p
+              className="truncate text-[11px] text-white/40"
+              title={notesFolder ?? undefined}
+            >
+              {notesFolder ? middleEllipsis(notesFolder) : "Loading…"}
+            </p>
           </div>
-          <button className="rounded-full bg-[#1c1c1c] px-2.5 py-1 text-[11px] text-white/65 hover:bg-white/15">
+          <button
+            onClick={openNotesFolder}
+            className="rounded-full bg-[#1c1c1c] px-2.5 py-1 text-[11px] text-white/65 hover:bg-white/15"
+          >
             Open folder
           </button>
         </div>
