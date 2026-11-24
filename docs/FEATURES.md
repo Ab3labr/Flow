@@ -101,6 +101,20 @@ timers. Timer state comes from `useTimer()` (see TimerView).
   accepted without a layout loop; over **2 MB** the paste is rejected with
   "Too large" and is not saved.
 
+### File store
+- Notes are markdown files named `YYYY-MM-DD HH-mm-ss {slug}.md` under the
+  configured notes folder (default `Documents\Float Notes`). A titled note is
+  `# {title}\n\n{body}`; a note with an empty title uses a `#` marker followed
+  by the body so its first line cannot be mistaken for a title.
+- Blank lines, trailing newlines and CRLF/BOM normalisation round-trip exactly:
+  parsing removes only the single heading/body separator line.
+- Saves are atomic (a hidden `.tmp` file in the same folder, then a rename).
+  The first save of an untitled note that later gets a title renames the file
+  to the real slug. `notes_list` returns the 5 newest files by mtime;
+  `notes_get` refuses files over 2 MB; `notes_delete` moves files to the
+  Recycle Bin. Rust emits `notes-changed` after its own writes and deletes so
+  an open recent list refreshes.
+
 ### Session and reopen rule (2026-11-24)
 - The current note (id, title, body, dirty flag, caret, scroll, save queue)
   lives in a session store in `Notch`, not in `NotesView`. Closing the panel

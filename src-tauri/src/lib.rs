@@ -35,6 +35,7 @@ pub fn run() {
       notes::notes_list,
       notes::notes_get,
       notes::notes_save,
+      notes::notes_create,
       notes::notes_delete,
       notes::notes_open_folder,
       notes::notes_folder_path,

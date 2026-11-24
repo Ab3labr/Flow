@@ -283,8 +283,34 @@ export const timerService = {
   restart: (): Promise<TimerSnapshot | null> => timerCommand("timer_restart"),
 };
 
+/** Rust emits `notes-changed` after its own writes and deletes. */
+let notesStarted: Promise<void> | null = null;
+const notesListeners = new Set<() => void>();
+
+function ensureNotesStarted(): Promise<void> {
+  if (!notesStarted) {
+    notesStarted = registerTauriListener(
+      listen("notes-changed", () => {
+        for (const listener of notesListeners) listener();
+      }),
+    ).then(() => {
+      debugLog("[ui] listener registered: notes-changed");
+    });
+  }
+  return notesStarted;
+}
+
 /** Notes service: real mode uses Tauri commands, mock mode uses localStorage. */
 export const notesService = {
+  /** Refresh the recent list after a native notes write or delete. */
+  subscribe: (handler: (event: string) => void): (() => void) => {
+    void ensureNotesStarted().catch(() => undefined);
+    const listener = () => handler("notes-changed");
+    notesListeners.add(listener);
+    return () => {
+      notesListeners.delete(listener);
+    };
+  },
   /** Real mode: list notes from the notes folder. */
   list: async (): Promise<Array<{ id: string; title: string; modifiedMs: number }>> => {
     if (import.meta.env.VITE_USE_MOCK) {

@@ -158,6 +158,16 @@ test("Notes session preserves blank lines in the multiline body", () => {
   assert.equal(session.getSnapshot().body, "First paragraph\n\nSecond paragraph");
 });
 
+test("mock note service saves blank lines and trailing newlines exactly", async () => {
+  localStorage.clear();
+  const body = "First paragraph\n\nSecond paragraph\n";
+  const saved = await services.noteService.save(null, "Title", body);
+  assert.ok(saved.id);
+  const stored = await services.noteService.get(saved.id as string);
+  assert.equal(stored?.body, body);
+  localStorage.clear();
+});
+
 test("NotesView mounts when the note list fails to load", async () => {
   services.noteService.list = () => {
     throw new Error("notes list unavailable");

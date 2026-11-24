@@ -279,10 +279,8 @@ not started / in progress / done / blocked
 - [x] Verification: `pnpm test` ✓ 50 passing, `pnpm exec tsc --noEmit` ✓,
       `pnpm build` ✓, `cargo check` ✓ (pre-existing notes.rs stub warnings
       only), `cargo test` ✓ 130 passing.
-- [ ] Pre-existing limitation, unchanged by this task: the file read/write/
-      list/delete bodies in `src-tauri/src/notes.rs` are still Phase 5 stubs.
-      The session pointers, open rule and reveal/folder commands are ready
-      for the real file store when it lands.
+- [x] The Phase 5 file store that session pointers were prepared for now
+      landed; see "Notes file store completion (2026-11-24)" below.
 
 ## Native tab-switch stability (2026-11-24)
 - [x] Fixed a native-window interaction race where an open-to-open panel
@@ -323,6 +321,33 @@ not started / in progress / done / blocked
       `pnpm exec tsc --noEmit` clean, `pnpm build` clean. The dev server also
       restarts cleanly with the new ignore list, so HMR no longer freezes
       after a cargo build.
+
+## Notes file store completion (2026-11-24)
+- [x] Replaced the Phase 5 stubs for `notes_list`, `notes_get`, `notes_save`,
+      `notes_create` and `notes_delete` with a real local markdown file store.
+      Commands now return camelCase objects matching the TypeScript contract
+      (`{id,title,modifiedMs}`, `{id,title,body,modifiedMs}`,
+      `{id,modifiedMs}`) instead of arrays the webview interpreted as objects.
+- [x] Saves are atomic (hidden `.tmp` in the notes folder + rename), enforce the
+      2 MB read ceiling, reject path-traversal ids, slug titles into safe file
+      names, and rename `Untitled.md` once a real title arrives. Deletes go to
+      the Recycle Bin via the existing `trash` crate. Rust emits `notes-changed`
+      after its own writes and the webview subscribes to refresh the recent
+      list.
+- [x] Fixed `parse_note` dropping blank lines: it now preserves every blank
+      line and trailing newline, removing only the single heading/body
+      separator. An empty title is stored as `#` followed by the body, so a
+      body beginning with text cannot be reinterpreted as a title on reload.
+- [x] Fixed the browser mock service trimming the body on save; blank lines and
+      trailing newlines now round-trip there too. Added Rust file-store tests
+      (save/get/list, in-place update, untitled rename, limit/sort, 2 MB
+      rejection, blank drafts) and a webview mock-save regression test.
+- [x] Verification: `cargo test` ✓ 141 passing, `cargo check` ✓ (two pre-existing
+      unused-helper warnings), `pnpm test` ✓ 53 passing, `pnpm exec tsc
+      --noEmit` ✓, `pnpm build` ✓.
+- [ ] Pre-existing limitation, unchanged by this task: there is still no
+      `notify` folder watcher, so edits made to note files outside Float are
+      picked up on the next Notes open/list rather than pushed live.
 
 ## Notes crash re-check (2026-11-24)
 - [x] Re-verified the existing `ErrorBoundary` wraps every tab (`Home`, `Timer`,

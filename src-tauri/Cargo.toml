@@ -49,5 +49,7 @@ windows = { version = "0.62", features = [
   "Win32_System_Registry",
   # Phase 4A: MessageBeep for the timer-done alert.
   "Win32_System_Diagnostics_Debug",
+  # Phase 5 notes: GetLocalTime for local-time note file names.
+  "Win32_System_SystemInformation",
 ] }
 trash = "5.4.0"

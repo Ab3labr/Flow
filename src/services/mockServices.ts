@@ -453,7 +453,9 @@ export const noteService = {
     const note: Note = {
       id: id || crypto.randomUUID(),
       title: title.trim(),
-      body: body.trim(),
+      // Preserve blank lines and trailing whitespace exactly: the editor's
+      // multiline body is the note's content, not a value to be tidied.
+      body,
       updatedAt: Date.now(),
     };
     writeNotes([note, ...readNotes()]);

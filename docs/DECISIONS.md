@@ -153,6 +153,9 @@ Phase 5
   ensures notes are sent to the Recycle Bin rather than permanently deleted.
 - settingsFolder configurable per-phase decision: Documents\Float Notes default,
   configurable via Settings; do NOT build from `%USERPROFILE%`.
+- `windows` `Win32_System_SystemInformation` feature (no new crate): `GetLocalTime`
+  is the Win32 API used to stamp note file names with the user's local time;
+  a pure UTC fallback keeps non-Windows builds compiling and testable.
 
 Phase 8
 - tauri-plugin-autostart: launch at startup
