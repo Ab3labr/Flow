@@ -157,6 +157,18 @@ test("NotesView mounts a note with missing fields", async () => {
   }
 });
 
+test("NotesView survives corrupt mock note storage", async () => {
+  services.noteService.list = originalList;
+  dom.window.localStorage.setItem("notch-notes", JSON.stringify({ notes: "not an array" }));
+  const view = await mount();
+  try {
+    assert.ok(view.container.querySelector("textarea"));
+  } finally {
+    await view.unmount();
+    dom.window.localStorage.removeItem("notch-notes");
+  }
+});
+
 test("ErrorBoundary shows a safe fallback and keeps the panel height valid", async () => {
   const heights: number[] = [];
   const container = dom.window.document.createElement("div");

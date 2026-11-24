@@ -387,9 +387,42 @@ export const captureService = {
 
 const NOTES_KEY = "notch-notes";
 
+function makeMockNoteId(): string {
+  const c = globalThis.crypto as Crypto | undefined;
+  if (c && typeof c.randomUUID === "function") return c.randomUUID();
+  return `note-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/**
+ * localStorage is user-editable and may contain old or corrupt JSON. Never let
+ * a malformed entry reach `.sort`, `.find` or `.filter` (a non-array previously
+ * threw before NotesView could render).
+ */
+function normaliseStoredNotes(value: unknown): Note[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): Note[] => {
+    if (!item || typeof item !== "object") return [];
+    const row = item as Partial<Note> & { modifiedMs?: unknown };
+    const updatedAt =
+      typeof row.updatedAt === "number" && Number.isFinite(row.updatedAt)
+        ? row.updatedAt
+        : typeof row.modifiedMs === "number" && Number.isFinite(row.modifiedMs)
+          ? row.modifiedMs
+          : Date.now();
+    return [
+      {
+        id: typeof row.id === "string" && row.id ? row.id : makeMockNoteId(),
+        title: typeof row.title === "string" ? row.title : "",
+        body: typeof row.body === "string" ? row.body : "",
+        updatedAt,
+      },
+    ];
+  });
+}
+
 function readNotes(): Note[] {
   try {
-    return JSON.parse(localStorage.getItem(NOTES_KEY) || "[]") as Note[];
+    return normaliseStoredNotes(JSON.parse(localStorage.getItem(NOTES_KEY) || "[]"));
   } catch {
     return [];
   }
@@ -404,7 +437,7 @@ export const noteService = {
   get: (id: string) => readNotes().find((note) => note.id === id),
   create: () => {
     const note: Note = {
-      id: crypto.randomUUID(),
+      id: makeMockNoteId(),
       title: "",
       body: "",
       updatedAt: Date.now(),

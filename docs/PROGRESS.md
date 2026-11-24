@@ -246,6 +246,25 @@ not started / in progress / done / blocked
       fields, plus an ErrorBoundary fallback test. `pnpm test` ✓ 34 passing;
       `pnpm exec tsc --noEmit` ✓ 0 errors; `pnpm build` ✓.
 
+## Notes crash re-check (2026-11-24)
+- [x] Re-verified the existing `ErrorBoundary` wraps every tab (`Home`, `Timer`,
+      `Calendar`, `Notes`, `Capture`, `Settings`), keeps the Notes panel at the
+      172 px minimum in its fallback, logs only the error message + component
+      stack through `logWebview`, and offers `Try again` plus the Notes-only
+      `Open notes folder` action.
+- [x] Confirmed the original NotesView crash paths remain fixed: the mock
+      `list()` is synchronous (no `.then`), the Tauri list is async (no
+      `.length` on a Promise), `recent` is always `Note[]`, invalid
+      timestamps never produce `NaN`, and service calls are feature-detected.
+- [x] Hardened the remaining mock-storage path: `notch-notes` JSON is
+      normalised to a safe array, so a non-array/partial/corrupt localStorage
+      value cannot make `.sort`, `.find`, `.filter` or `.length` throw.
+- [x] Added a corrupt-mock-storage mount regression test; synchronous
+      unsubscribe/delete/open-folder failures are now caught so they cannot
+      escape the view.
+- [x] Verification: `pnpm test` ✓ 43 passing, `pnpm exec tsc --noEmit` ✓,
+      `pnpm build` ✓.
+
 ## Global shortcuts (Phase 2 follow-up, 2026-11-22)
 - [x] Added `src-tauri/src/hotkeys.rs`: pure `Alt+N` / `Alt+C` / `Alt+Z`
       parser (modifier required, canonical duplicate keys), `MOD_NOREPEAT`

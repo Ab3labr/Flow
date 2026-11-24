@@ -52,8 +52,11 @@ export class ErrorBoundary extends Component<Props, State> {
 
   private handleOpenNotesFolder = () => {
     const open = (noteService as { openFolder?: () => Promise<void> | void }).openFolder;
-    if (typeof open === "function") {
+    if (typeof open !== "function") return;
+    try {
       void Promise.resolve(open.call(noteService)).catch(() => undefined);
+    } catch {
+      // The fallback must stay usable even if the shell command fails.
     }
   };
 

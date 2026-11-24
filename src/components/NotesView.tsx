@@ -149,7 +149,12 @@ export function NotesView({
       return;
     }
     return () => {
-      if (typeof unsubscribe === "function") (unsubscribe as () => void)();
+      if (typeof unsubscribe !== "function") return;
+      try {
+        (unsubscribe as () => void)();
+      } catch {
+        // A failed unsubscribe must not take down the Notes tab.
+      }
     };
   }, []);
 
@@ -290,7 +295,11 @@ export function NotesView({
     };
     const remove = service.remove ?? service.delete;
     if (typeof remove === "function") {
-      void Promise.resolve(remove.call(service, item.id)).catch(() => undefined);
+      try {
+        void Promise.resolve(remove.call(service, item.id)).catch(() => undefined);
+      } catch {
+        // localStorage or the service can throw synchronously; keep the view up.
+      }
     }
     void loadNotes().then((rows) => {
       if (!mounted.current) return;
