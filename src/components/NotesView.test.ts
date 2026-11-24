@@ -53,6 +53,7 @@ type ClientModule = typeof import("react-dom/client");
 
 let vite: ViteDevServer;
 let NotesView: NotesViewModule["NotesView"];
+let noteCardHeightForContent: NotesViewModule["noteCardHeightForContent"];
 let ErrorBoundary: ErrorBoundaryModule["ErrorBoundary"];
 let services: ServicesModule;
 let createNoteSession: SessionModule["createNoteSession"];
@@ -65,12 +66,17 @@ before(async () => {
     configFile: false,
     appType: "custom",
     logLevel: "error",
-    server: { middlewareMode: true },
+    // Tests never need HMR, and watching the project (including the 35 GB
+    // `src-tauri/target` tree) stalls this server until module fetches time
+    // out. Disable the watcher outright.
+    server: { middlewareMode: true, watch: null },
     optimizeDeps: { noDiscovery: true },
     // @ts-expect-error Vite's ESBuildOptions type omits `jsx`; the runtime honours it.
     esbuild: { jsx: "automatic" },
   });
-  ({ NotesView } = await vite.ssrLoadModule("/src/components/NotesView.tsx") as NotesViewModule);
+  ({ NotesView, noteCardHeightForContent } = await vite.ssrLoadModule(
+    "/src/components/NotesView.tsx",
+  ) as NotesViewModule);
   ({ ErrorBoundary } = await vite.ssrLoadModule(
     "/src/components/ErrorBoundary.tsx",
   ) as ErrorBoundaryModule);
@@ -135,6 +141,21 @@ test("NotesView mounts with no notes", async () => {
   } finally {
     await view.unmount();
   }
+});
+
+test("Notes editor grows only for new body lines and caps below the panel maximum", () => {
+  assert.equal(noteCardHeightForContent(0), 120);
+  assert.equal(noteCardHeightForContent(42), 120);
+  assert.equal(noteCardHeightForContent(43), 120);
+  assert.equal(noteCardHeightForContent(180), 248);
+  // The remaining outer panel chrome takes the panel to its 340 px maximum.
+  assert.equal(noteCardHeightForContent(10_000), 288);
+});
+
+test("Notes session preserves blank lines in the multiline body", () => {
+  const session = makeSession();
+  session.update({ body: "First paragraph\n\nSecond paragraph" });
+  assert.equal(session.getSnapshot().body, "First paragraph\n\nSecond paragraph");
 });
 
 test("NotesView mounts when the note list fails to load", async () => {

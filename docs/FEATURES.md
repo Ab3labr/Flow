@@ -78,11 +78,14 @@ timers. Timer state comes from `useTimer()` (see TimerView).
 ## Notes (Phase 5B)
 
 ### Card
-- Card `rounded-[14px] bg-[#121212]`, `min-h-[120px] max-h-[340px]`, spring
-  height (380/30/0.9); content = textarea scrollHeight + 68 clamped
-  120–340; panel height = card + 52 clamped 172–340.
+- Card `rounded-[14px] bg-[#121212]`, `min-h-[120px] max-h-[288px]`, spring
+  height (380/30/0.9); content = the textarea's **natural** scrollHeight + 68
+  clamped 120–288. The outer panel adds 52 px and therefore stays within
+  172–340; the textarea scrolls internally once it reaches that cap.
 - Title 14px semibold (placeholder "Start typing…"); textarea 13px
-  leading-1.5 white/75, min-h-42px, auto-grow.
+  leading-1.5 white/75, min-h-42px, auto-grow to the card cap then scroll.
+  Enter in the title moves focus to the multiline body; repeated Enter in the
+  body preserves blank lines.
 - Footer `h-6 border-t white/5`: "Saved" check (a small button; see
   Session below); "Saving..." if a save takes longer than 400 ms; "Couldn't
   save" in red (#ff453a) if it fails (keeps text in editor and retries on next

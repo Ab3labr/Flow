@@ -295,6 +295,35 @@ not started / in progress / done / blocked
       is switching features. Added a Rust regression test for the native
       input policy.
 
+## Notes editor viewport stability (2026-11-24)
+- [x] Fixed recursive Notes height measurement: the body measures its
+      **natural** content height (it collapses `flexGrow` as well as `height`,
+      because the textarea is a flex-grown item whose box survives
+      `height: 0`) rather than the flex-expanded editor viewport. The card
+      grows only when a new body line needs space, shrinks back to 120 px for
+      a short note, caps at 288 px (340 px including the outer panel chrome),
+      and the textarea then scrolls internally.
+- [x] Enter in the single-line title now continues in the multiline body;
+      blank lines are preserved. Added card-cap and blank-line regression
+      tests.
+- [x] Verified in the running app: a 40-line note = card 288 px, textarea
+      230 px tall showing 780 px of content with a working `scrollTop`; a
+      one-line note = card back to 120 px; `\\n\\n` survives a paste; no
+      console errors.
+
+## Test/dev-server watcher root cause (2026-11-24)
+- [x] `pnpm test` hung past 60 s with `transport invoke timed out` in Vite's
+      SSR module runner, and the first NotesView test alone took ~50 s.
+      Cause: every Vite instance watched `src-tauri/target` — 19,932 files /
+      **35.8 GB** that churns on every cargo run — which stalls Vite's event
+      loop. `vite.config.ts` now ignores `src-tauri/target/**` and `dist/**`,
+      and the NotesView test server disables its watcher
+      (`server.watch: null`; tests never need HMR).
+- [x] Result: `pnpm test` 52 passing in **5.6 s** (was >60 s then hung),
+      `pnpm exec tsc --noEmit` clean, `pnpm build` clean. The dev server also
+      restarts cleanly with the new ignore list, so HMR no longer freezes
+      after a cargo build.
+
 ## Notes crash re-check (2026-11-24)
 - [x] Re-verified the existing `ErrorBoundary` wraps every tab (`Home`, `Timer`,
       `Calendar`, `Notes`, `Capture`, `Settings`), keeps the Notes panel at the

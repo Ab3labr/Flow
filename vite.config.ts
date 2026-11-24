@@ -36,7 +36,11 @@ export default defineConfig(({ mode }) => {
       port: parseInt(process.env.PORT || "8443"),
       strictPort: true,
       watch: {
-        ignored: ["**/.figma/**"],
+        // Never watch the Rust build tree: `src-tauri/target` holds tens of
+        // thousands of files and churns on every cargo run, which stalls the
+        // Vite event loop (SSR module fetches time out in tests and HMR
+        // freezes in `pnpm tauri dev`). `dist` is build output too.
+        ignored: ["**/.figma/**", "**/src-tauri/target/**", "**/dist/**"],
       },
     },
     preview: {

@@ -12,6 +12,22 @@ import { isNoteTooLarge, loadNoteList, timeAgo } from "../notes/noteData";
 import type { NoteSession } from "../notes/noteSession";
 import { PressButton } from "./TopBar";
 
+const MIN_BODY_HEIGHT = 42;
+const MIN_CARD_HEIGHT = 120;
+const NOTE_CARD_CHROME = 68;
+const PANEL_CHROME = 52;
+const MAX_PANEL_HEIGHT = 340;
+// The outer panel includes TopBar, its margin and panel padding. Keep the
+// card below the approved 340 px panel maximum so the body can scroll.
+const MAX_CARD_HEIGHT = MAX_PANEL_HEIGHT - PANEL_CHROME;
+
+/** Card height for a natural textarea height, bounded by the panel viewport. */
+export function noteCardHeightForContent(contentHeight: number): number {
+  const bodyHeight =
+    Number.isFinite(contentHeight) ? Math.max(MIN_BODY_HEIGHT, contentHeight) : MIN_BODY_HEIGHT;
+  return Math.min(MAX_CARD_HEIGHT, Math.max(MIN_CARD_HEIGHT, bodyHeight + NOTE_CARD_CHROME));
+}
+
 type ServiceExtras = {
   subscribe?: (listener: (event: string) => void) => unknown;
   remove?: (id: string) => unknown;
@@ -53,16 +69,28 @@ export function NotesView({
     onHeightChange(next + 52);
   };
 
-  // Measure after every text change (never during render). A large paste is
-  // still one measurement, so it cannot lock the panel in a layout loop.
+  // Measure the textarea's natural content height, not its flexed viewport
+  // height. Measuring scrollHeight while it fills the card feeds the current
+  // card height back into itself and makes the panel grow on every keystroke.
+  // A large paste is still one measurement, so it cannot lock the panel in a
+  // layout loop.
   useEffect(() => {
     const element = bodyRef.current;
     if (!element) return;
-    const contentHeight = Math.max(42, element.scrollHeight);
-    applyHeight(Math.min(340, Math.max(172, contentHeight + 68)));
-    // `applyHeight` only depends on the ref and the prop.
+    const previousHeight = element.style.height;
+    const previousGrow = element.style.flexGrow;
+    // The textarea is a flex-grown item, so `height: 0` alone still leaves the
+    // flex-assigned box in place and scrollHeight reports the *viewport*, not
+    // the content. Collapsing the grow factor too gives the natural height.
+    element.style.flexGrow = "0";
+    element.style.height = "0px";
+    const contentHeight = element.scrollHeight;
+    element.style.height = previousHeight;
+    element.style.flexGrow = previousGrow;
+    applyHeight(noteCardHeightForContent(contentHeight));
+    // `applyHeight` only depends on the ref and the callback prop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snapshot.title, snapshot.body, onHeightChange]);
+  }, [snapshot.body, onHeightChange]);
 
   // Restore the scroll position and put the caret at the end.
   useEffect(() => {
@@ -225,7 +253,7 @@ export function NotesView({
     <motion.div
       layout
       transition={{ type: "spring", stiffness: 380, damping: 30, mass: 0.9 }}
-      className="flex min-h-[120px] max-h-[340px] flex-col overflow-hidden rounded-[14px] bg-[#121212]"
+      className="flex min-h-[120px] max-h-[288px] flex-col overflow-hidden rounded-[14px] bg-[#121212]"
       animate={{ height: cardHeight }}
     >
       <div className="flex min-h-0 flex-1 flex-col px-3 pt-2.5">
@@ -234,6 +262,13 @@ export function NotesView({
           value={snapshot.title}
           onChange={(event) => session.update({ title: event.target.value })}
           onPaste={titlePaste}
+          onKeyDown={(event) => {
+            // The title remains a one-line name. Enter continues writing in
+            // the multiline note body, where repeated Enters make blank lines.
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            bodyRef.current?.focus();
+          }}
           onSelect={(event) => session.setCaret(event.currentTarget.selectionStart ?? 0)}
           placeholder="Start typing…"
           className="h-6 shrink-0 bg-transparent text-[14px] font-semibold text-white placeholder:text-white/30"
